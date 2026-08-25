@@ -140,7 +140,8 @@ On the 9800X3D the empirically mapped commands remain `0x3E` PPT, `0x3D` TDC,
 `0x3C` EDC and `0x50`-`0x57` per-core CO. The 9950X3D profile uses the maintained
 ZenStates-Core mapping: `0x3E` PPT, `0x3C` TDC, `0x3D` EDC and `0x35` per-core CO
 with CCD/core selection encoded in the argument. Curve Optimizer is write-only, so
-the tools cache applied offsets in `$XDG_CONFIG_HOME/gnr_master.json`.
+the tools cache applied offsets in `$XDG_CONFIG_HOME/gnr_master.json`. The GUI also
+stores its sensor-table column order, column widths and refresh interval there.
 
 `research/` holds the measurement scripts, one per question asked: `audit_map.py`
 (the map's regression gate), `recheck_zone0.py` / `recheck_sweep.py` / `recheck_edc.py`
