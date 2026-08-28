@@ -8,9 +8,10 @@ Telemetry and controls are supported on the Ryzen 7 9800X3D and Ryzen 9 9950X3D.
 The 9950X3D profile includes all 16 per-core temperatures and a model-specific SMU
 command allowlist; see [`docs/9950X3D.md`](docs/9950X3D.md).
 
-On the 9950X3D, no PM-table block is currently established as live per-core
-frequency. The GUI uses Linux `cpufreq` for that value and keeps the mapped PM
-blocks labelled as Power, FIT, Activity, C0, CC1 and CC6 instead of guessing.
+On the 9950X3D, Ryzen Master and a direct live comparison establish
+`d[349..364]` as the per-core clock lane in GHz. GNR Master uses this direct
+PM-table value and does not fall back to Linux `cpufreq`. The remaining mapped
+blocks retain conservative labels until independently validated.
 
 ![GNR-SMU Dashboard](assets/screenshot.png)
 

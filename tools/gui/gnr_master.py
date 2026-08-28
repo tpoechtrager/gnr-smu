@@ -3,7 +3,6 @@ import struct
 import subprocess
 import json
 import os
-import glob
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
@@ -39,23 +38,6 @@ ACCENT_ORANGE = "#ff9d2e"
 ACCENT_GREEN = "#36c987"
 ACCENT_PURPLE = "#b48cff"
 ACCENT_CYAN = "#42c8e8"
-
-
-def physical_core_cpu_ids():
-    """Return one logical CPU per physical core, ordered by package and core ID."""
-    cores = {}
-    for path in glob.glob("/sys/devices/system/cpu/cpu[0-9]*"):
-        cpu = int(os.path.basename(path)[3:])
-        topology = os.path.join(path, "topology")
-        try:
-            with open(os.path.join(topology, "physical_package_id")) as f:
-                package = int(f.read())
-            with open(os.path.join(topology, "core_id")) as f:
-                core = int(f.read())
-        except OSError:
-            continue
-        cores[(package, core)] = min(cpu, cores.get((package, core), cpu))
-    return [cores[key] for key in sorted(cores)]
 
 
 def decode_zen_tctl_smn_temperature(raw):
@@ -273,7 +255,6 @@ class GNRMaster(QMainWindow):
         self._preferences_timer.timeout.connect(self._save_sensor_preferences)
         self.current_ppt, self.current_tdc, self.current_edc = self._read_pm_limits()
         self.current_co = self.load_co_config()
-        self.core_cpu_ids = physical_core_cpu_ids()
 
         self._build_interface()
         self._restore_window_size()
@@ -603,7 +584,7 @@ class GNRMaster(QMainWindow):
         for core in range(self.core_count):
             self._add_sensor(core_clocks, f"core_clock_{core}",
                              f"Core {core} (CCD{core // 8 + 1})", "MHz",
-                             "Live frequency from Linux cpufreq on the 9950X3D")
+                             "Direct PM-table clock lane used by Ryzen Master")
 
         voltages = self._add_sensor_group(None, "Voltages")
         for key, label in (("vcore_peak", "Vcore Peak"), ("vcore_avg", "Vcore Average"),
@@ -617,7 +598,9 @@ class GNRMaster(QMainWindow):
             self._add_sensor(core_voltages, f"core_voltage_{core}",
                              f"Core {core} (CCD{core // 8 + 1})", "V")
 
-        residency = self._add_sensor_group(None, "Core residency & FIT")
+        residency_label = ("Core residency & FIT" if self.profile is None
+                           or self.profile.core_fit is not None else "Core residency")
+        residency = self._add_sensor_group(None, residency_label)
         ccd_summary = self._add_sensor_group(residency, "CCD residency summary")
         has_direct_c0 = self.profile is not None and self.profile.core_c0 is not None
         for ccd in range(max(1, (self.core_count + 7) // 8)):
@@ -631,13 +614,14 @@ class GNRMaster(QMainWindow):
             self._add_sensor(ccd_summary, f"ccd_cc6_{ccd}", f"CCD{ccd + 1} CC6 residency", "%",
                              current_color=ACCENT_PURPLE)
 
-        fit_group = self._add_sensor_group(residency, "FIT / related metric")
-        for core in range(self.core_count):
-            ccd = core // 8 + 1
-            self._add_sensor(fit_group, f"core_fit_{core}",
-                             f"Core {core} FIT-related metric (CCD{ccd})", "",
-                             "Per-core PM-table FIT/related metric; not a direct temperature or voltage reading.",
-                             ACCENT_ORANGE)
+        if self.profile is None or self.profile.core_fit is not None:
+            fit_group = self._add_sensor_group(residency, "FIT / related metric")
+            for core in range(self.core_count):
+                ccd = core // 8 + 1
+                self._add_sensor(fit_group, f"core_fit_{core}",
+                                 f"Core {core} FIT-related metric (CCD{ccd})", "",
+                                 "Per-core PM-table FIT/related metric; not a direct temperature or voltage reading.",
+                                 ACCENT_ORANGE)
 
         c0_group = self._add_sensor_group(
             residency, "C0 residency · active cores" if has_direct_c0 else "Active/load estimate · 100 - CC6"
@@ -981,18 +965,10 @@ class GNRMaster(QMainWindow):
             return 162.0, 120.0, 180.0
 
     def _core_frequency_mhz(self, table, core):
-        """Use the PM-table frequency where mapped, otherwise Linux cpufreq."""
+        """Use only an explicit, profile-approved PM-table frequency lane."""
         if self.profile.core_frequency is not None:
             return table[self.profile.core_frequency + core] * 1000
-        if core >= len(self.core_cpu_ids):
-            return None
-        path = (f"/sys/devices/system/cpu/cpu{self.core_cpu_ids[core]}/"
-                "cpufreq/scaling_cur_freq")
-        try:
-            with open(path) as f:
-                return float(f.read()) / 1000
-        except (OSError, ValueError):
-            return None
+        return None
 
     def _update_sensor_tree(self, d):
         vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
@@ -1070,7 +1046,8 @@ class GNRMaster(QMainWindow):
             self._set_sensor(f"core_clock_{core}", freq)
             self._set_sensor(f"core_power_{core}", d[self.profile.core_power + core])
             self._set_sensor(f"core_voltage_{core}", d[self.profile.core_voltage + core])
-            self._set_sensor(f"core_fit_{core}", d[self.profile.core_fit + core])
+            if self.profile.core_fit is not None:
+                self._set_sensor(f"core_fit_{core}", d[self.profile.core_fit + core])
             self._set_sensor(f"core_cc6_{core}", d[self.profile.core_cc6 + core])
             self._set_sensor(f"co_{core}", self.current_co[core])
             if self.profile.core_c0 is not None:

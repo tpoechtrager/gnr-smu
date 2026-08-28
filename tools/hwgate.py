@@ -25,7 +25,7 @@ class HardwareProfile:
     core_voltage: int
     core_temp: int
     core_frequency: Optional[int]
-    core_fit: int
+    core_fit: Optional[int]
     core_activity: Optional[int]
     core_c0: Optional[int]
     core_cc1: Optional[int]
@@ -90,8 +90,12 @@ PROFILES = {
     ),
     (0x620205, 2452, 16): HardwareProfile(
         "AMD Ryzen 9 9950X3D", "AMD Ryzen 9 9950X3D", 0x620205, 2452, 16,
-        core_power=301, core_voltage=317, core_temp=333, core_frequency=None,
-        core_fit=349, core_activity=365, core_c0=381, core_cc1=397,
+        core_power=301, core_voltage=317, core_temp=333, core_frequency=349,
+        # Ryzen Master multiplies d[349+i] by 1000 before exposing its
+        # per-core clock array. Live comparison on this 9950X3D found
+        # d[349] = 5.472 GHz while Linux reported 5456 MHz for core 0.
+        # Do not retain the previous FIT label for this frequency lane.
+        core_fit=None, core_activity=365, core_c0=381, core_cc1=397,
         core_cc6=413, core_boost_limit=445, boost_limit_confident=False,
         # Low-confidence candidates from the 0x620205 table.  Keep these
         # explicitly separate from validated fields until correlated traces
