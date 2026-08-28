@@ -72,7 +72,8 @@ PROFILES = {
         core_cc6=349, core_boost_limit=373, boost_limit_confident=True,
         ccd_power_candidate=None, ccd_vddm_candidate=None,
         ccd_l3_temperature=None, ccd_candidate_count=0,
-        ppt_msg=0x3E, tdc_msg=0x3D, edc_msg=0x3C,
+        # Confirmed by read-back in research/probe_tdc_edc.py.
+        ppt_msg=0x3E, tdc_msg=0x3C, edc_msg=0x3D,
         stock_ppt=162, stock_tdc=120, stock_edc=180,
         co_mode="legacy_per_message",
         allow_smu_writes=True,
@@ -130,6 +131,26 @@ PROFILES = {
         edc_value=64,
     ),
 }
+
+# MP1 message IDs that must never be sent, wherever the send happens. This lived as a
+# set literal in the CLI and as two separate ifs in the GUI, and the research tools had
+# no equivalent at all — the same three-copies-of-one-rule shape that let the TDC/EDC
+# mapping stay wrong in one copy for months.
+#
+#   0x03-0x0D, 0x10   dangerous MP1 IDs (docs/FINDINGS.md)
+#   0x58-0x5D         freeze MP1 on this part: no response, recovery needs a reboot
+BLOCKED_MSG_IDS = {0x10} | set(range(0x03, 0x0E)) | set(range(0x58, 0x5E))
+
+
+def msg_id_blocked(msg_id):
+    """(blocked, reason). Reason is None when the ID is allowed."""
+    if 0x58 <= msg_id <= 0x5D:
+        return True, (f"MSG 0x{msg_id:02x} freezes MP1 on Granite Ridge — no response, "
+                      "recovery needs a reboot")
+    if msg_id in BLOCKED_MSG_IDS:
+        return True, f"MSG 0x{msg_id:02x} is on the never-send list"
+    return False, None
+
 
 _cached = None
 
@@ -255,8 +276,31 @@ def map_labels_supported():
 
 
 if __name__ == "__main__":
+    import tempfile
+
+    # The parser is the only part worth checking without the hardware present. Use
+    # real blank-line-separated processor blocks so the fixture matches /proc/cpuinfo.
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+                "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+                "processor\t: 2\nphysical id\t: 0\ncore id\t\t: 1\n")
+        two_cores = f.name
+    assert _core_count(two_cores) == 2, "two distinct physical cores"
+    assert _core_count("/nonexistent") == 0, "unreadable cpuinfo must not claim a count"
+
+    for blocked_id in (0x03, 0x0D, 0x10, 0x58, 0x5D):
+        assert msg_id_blocked(blocked_id)[0], f"0x{blocked_id:02x} must be blocked"
+    for allowed_id in (0x02, 0x0E, 0x3C, 0x3D, 0x3E, 0x50, 0x57, 0x5E):
+        assert not msg_id_blocked(allowed_id)[0], f"0x{allowed_id:02x} must be allowed"
+
+    for profile_key, test_profile in PROFILES.items():
+        assert (test_profile.ppt_msg, test_profile.tdc_msg, test_profile.edc_msg) == \
+            (0x3E, 0x3C, 0x3D), f"wrong power-limit mapping for {test_profile.name}"
+
     profile, why = get_hardware_profile()
     print(f"{'SUPPORTED' if profile else 'REFUSED'}: {why}")
+    print(f"this machine reports {_core_count()} physical cores")
+    print(f"never-send list: {len(BLOCKED_MSG_IDS)} message IDs")
     if profile:
         print(f"per-core temperatures: d[{profile.core_temp}.."
               f"{profile.core_temp + profile.cores - 1}]")

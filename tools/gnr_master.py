@@ -6,16 +6,16 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import (curve_optimizer_command, get_hardware_profile,
-                    smu_message_supported, smu_writes_supported)
+                    msg_id_blocked, smu_message_supported,
+                    smu_writes_supported)
 
 CONFIG_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "gnr_master.json",
 )
 
-# The GUI blocks these outright; the CLI never sends them, but it applies the same
-# rule so the two cannot drift. 0x10 and 0x03-0x0D are the dangerous MP1 IDs.
-BLOCKED = {0x10} | set(range(0x03, 0x0E))
+# Stock limits and MP1 message IDs live on the detected hardware profile. The
+# never-send list also lives in hwgate.py so CLI, GUI and research tools cannot drift.
 
 
 def apply_cmd(msg_id, arg0):
@@ -27,8 +27,9 @@ def apply_cmd(msg_id, arg0):
     if not smu_message_supported(profile, msg_id):
         print(f"[BLOCKED] MSG 0x{msg_id:02x} is not in the {profile.name} allowlist")
         return False
-    if msg_id in BLOCKED:
-        print(f"[BLOCKED] guardrail: MSG 0x{msg_id:02x}")
+    blocked, reason = msg_id_blocked(msg_id)
+    if blocked:
+        print(f"[BLOCKED] guardrail: {reason}")
         return False
 
     smu_args = "/sys/kernel/ryzen_smu_drv/smu_args"

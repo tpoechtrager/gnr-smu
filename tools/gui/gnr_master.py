@@ -17,7 +17,7 @@ CONFIG_PATH = os.path.join(
 # offsets and refuses unknown CPU/table combinations.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hwgate import (curve_optimizer_command, get_hardware_profile,
-                    hardware_supported, smu_message_supported,
+                    hardware_supported, msg_id_blocked, smu_message_supported,
                     smu_writes_supported)  # noqa: E402
 
 # --- Color Theme ---
@@ -798,13 +798,9 @@ class GNRMaster(QMainWindow):
                 "ERROR", ACCENT_RED,
             )
             return False
-        if msg_id == 0x10:
-            self.log_msg("FATAL GUARDRAIL: MSG 0x10 BLOCKED", "ERROR", ACCENT_RED)
-            return False
-        if 0x03 <= msg_id <= 0x0D:
-            self.log_msg(
-                f"GUARDRAIL: MSG {hex(msg_id)} BLOCKED", "WARNING", ACCENT_ORANGE
-            )
+        blocked, reason = msg_id_blocked(msg_id)
+        if blocked:
+            self.log_msg(f"GUARDRAIL: {reason}", "ERROR", ACCENT_RED)
             return False
 
         SMU_ARGS = "/sys/kernel/ryzen_smu_drv/smu_args"
