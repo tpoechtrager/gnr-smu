@@ -13,6 +13,8 @@ CONFIG_PATH = os.path.join(
     "gnr_master.json",
 )
 SMN_PATH = "/sys/kernel/ryzen_smu_drv/smn"
+SMU_ARGS_PATH = "/sys/kernel/ryzen_smu_drv/smu_args"
+SMU_CMD_PATH = "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
 
 # Only exact, measured PM-table profiles are accepted; tools/hwgate.py owns the
 # offsets and refuses unknown CPU/table combinations.
@@ -104,6 +106,19 @@ def read_profile_tctl_temperature(profile):
         return None
     raw = read_smn_u32(profile.tctl_smn_address)
     return decode_zen_tctl_smn_temperature(raw) if raw is not None else None
+
+
+def smu_write_permission_reason():
+    """Return a human-readable preflight failure, or None when writes are allowed."""
+    paths = (SMU_ARGS_PATH, SMU_CMD_PATH)
+    missing = [path for path in paths if not os.path.exists(path)]
+    if missing:
+        return "SMU driver interface is unavailable. Is ryzen_smu loaded?"
+    unavailable = [path for path in paths if not os.access(path, os.W_OK)]
+    if unavailable:
+        return ("SMU controls require root privileges. Start GNR Master with "
+                "sudo to change power limits or Curve Optimizer settings.")
+    return None
 
 
 # ================= THREAD : REAL-TIME KERNEL LOGS =================
@@ -824,38 +839,37 @@ class GNRMaster(QMainWindow):
         self._save_config({"co_offsets": self.current_co})
 
     def send_smu_cmd(self, msg_id, arg0=0):
+        permission_reason = smu_write_permission_reason()
+        if permission_reason:
+            self._show_smu_error(permission_reason)
+            return False
         ok, why = smu_writes_supported()
         if not ok:
-            self.log_msg(f"GUARDRAIL: SMU writes disabled — {why}", "ERROR", ACCENT_RED)
+            self._show_smu_error(f"SMU writes disabled — {why}")
             return False
         if not smu_message_supported(self.profile, msg_id):
-            self.log_msg(
-                f"GUARDRAIL: MSG {hex(msg_id)} is not in the {self.profile.name} "
-                "command allowlist",
-                "ERROR", ACCENT_RED,
+            self._show_smu_error(
+                f"MSG {hex(msg_id)} is not in the {self.profile.name} command allowlist"
             )
             return False
         blocked, reason = msg_id_blocked(msg_id)
         if blocked:
-            self.log_msg(f"GUARDRAIL: {reason}", "ERROR", ACCENT_RED)
+            self._show_smu_error(reason)
             return False
-
-        SMU_ARGS = "/sys/kernel/ryzen_smu_drv/smu_args"
-        SMU_CMD = "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
 
         try:
             # 1) Write args: 6 x uint32 LE (arg0 in slot 0, rest = 0)
             args_bin = struct.pack("<6I", arg0 & 0xFFFFFFFF, 0, 0, 0, 0, 0)
-            with open(SMU_ARGS, "wb") as f:
+            with open(SMU_ARGS_PATH, "wb") as f:
                 f.write(args_bin)
 
             # 2) Write MSG ID as uint32 LE to trigger the command
             cmd_bin = struct.pack("<I", msg_id)
-            with open(SMU_CMD, "wb") as f:
+            with open(SMU_CMD_PATH, "wb") as f:
                 f.write(cmd_bin)
 
             # 3) Read response
-            with open(SMU_CMD, "rb") as f:
+            with open(SMU_CMD_PATH, "rb") as f:
                 rsp_data = f.read(4)
             rsp = struct.unpack("<I", rsp_data)[0] if len(rsp_data) == 4 else 0xFF
 
@@ -871,17 +885,27 @@ class GNRMaster(QMainWindow):
                 "SMU",
                 color,
             )
+            if rsp != 1:
+                self._show_smu_error(
+                    f"SMU rejected the command (MSG {hex(msg_id)}, response {rsp_str})."
+                )
             return rsp == 1
         except Exception as e:
-            self.log_msg(f"SMU write failed: {str(e)}", "ERROR", ACCENT_RED)
+            self._show_smu_error(f"SMU write failed: {str(e)}")
             return False
 
+    def _show_smu_error(self, message):
+        self.log_msg(f"SMU: {message}", "ERROR", ACCENT_RED)
+        QMessageBox.critical(self, "SMU control failed", message)
+
     def _smu_controls_available(self):
+        permission_reason = smu_write_permission_reason()
+        if permission_reason:
+            self._show_smu_error(permission_reason)
+            return False
         ok, why = smu_writes_supported()
         if not ok:
-            self.log_msg(
-                f"GUARDRAIL: SMU controls disabled — {why}", "ERROR", ACCENT_RED
-            )
+            self._show_smu_error(f"SMU controls disabled — {why}")
         return ok
 
     def open_power_control(self):
@@ -911,6 +935,8 @@ class GNRMaster(QMainWindow):
             for name, value in changed.items():
                 if self.send_smu_cmd(commands[name], int(value * 1000)):
                     setattr(self, f"current_{name.lower()}", value)
+                else:
+                    break
 
     def open_core_control(self):
         if not self._smu_controls_available():
@@ -928,6 +954,8 @@ class GNRMaster(QMainWindow):
                 if self.send_smu_cmd(msg_id, arg0):
                     self.current_co[core] = value
                     applied.append(core)
+                else:
+                    break
             if applied:
                 self.save_co_config()
                 self.log_msg(
