@@ -5,8 +5,9 @@ Telemetry map and SMU control tools for AMD Granite Ridge (Zen 5) under Linux.
 This is a fork of [Kyworn/gnr-smu](https://github.com/Kyworn/gnr-smu).
 
 Telemetry and controls are supported on the Ryzen 7 9800X3D and Ryzen 9 9950X3D.
-The 9950X3D profile includes all 16 per-core temperatures and a model-specific SMU
-command allowlist; see [`docs/9950X3D.md`](docs/9950X3D.md).
+See the [9800X3D profile](docs/cpus/zen5/9800X3D.md) and
+[9950X3D profile](docs/cpus/zen5/9950X3D.md) documentation for the supported telemetry and
+controls.
 
 On the 9950X3D, Ryzen Master and a direct live comparison establish
 `d[349..364]` as the per-core clock lane in GHz. GNR Master uses this direct
@@ -25,7 +26,7 @@ repo contains the measured layouts and tools that select the correct profile.
 - **Adds Ryzen 9 9950X3D support.** The original repo only supports the Ryzen 7
   9800X3D. This fork adds a full second hardware profile for the 9950X3D — PM table
   `0x620205`, all 16 per-core temperatures, and a model-specific SMU command
-  allowlist; see [`docs/9950X3D.md`](docs/9950X3D.md).
+  allowlist; see [`docs/cpus/zen5/9950X3D.md`](docs/cpus/zen5/9950X3D.md).
 - **Unified HWiNFO-style dashboard.** The GUI ([`tools/gui/gnr_master.py`](tools/gui/gnr_master.py))
   is a single sensor tree with current/min/max/average columns, replacing the older
   page-per-category layout. A live status bar shows CPU/CCD temperatures, peak core
@@ -161,7 +162,10 @@ Two measurement lessons from building it are worth stealing if you write your ow
 
 ## Tools
 
-All of them need the `ryzen_smu` driver loaded, and root.
+All of them need the `ryzen_smu` driver loaded. Root is required for SMN reads and
+SMU writes; when the GUI is started without root it shows a warning and hides the
+direct-SMN sensors (Tctl/Tdie, CCD, IOD and PROCHOT/HTC), while PM-table telemetry
+remains available.
 
 ```bash
 sudo python3 tools/gui/gnr_master.py      # HWiNFO-style table: current/min/max/avg, cores, rails, L3
@@ -205,14 +209,15 @@ Writing to the SMU mailbox can destabilise or damage hardware. Specifics that ma
 
 - **A wrong offset is worse than a missing one.** Reading the wrong field shows a
   wrong number; writing a limit *derived* from a wrong field pushes it into the SMU.
-  That has already happened here once — the thermal limit (88 °C) was read as TDC and
-  pre-filled the write dialog as 88 A. Hence the hardware gate.
+  That has already happened here once on the 9800X3D profile — its configured
+  thermal limit was read as TDC and pre-filled the write dialog with an incorrect
+  current value. Hence the hardware gate.
 - **Both front-ends block message IDs `0x03`-`0x0D` and `0x10`** outright, and that
   should stay. `0x58`-`0x5D` freeze MP1 on this part; do not probe them.
 - Stock limits are 162 W PPT / 120 A TDC / 180 A EDC on the 9800X3D and 200 W /
   160 A / 225 A on the 9950X3D. The reset paths select the matching profile.
-- 3D V-Cache runs under a tighter thermal ceiling than the rest of the die. The
-  table reports 88 °C on the tested 9800X3D and 95 °C on the tested 9950X3D.
+- The supported X3D profiles use a 95 °C thermal ceiling. The value is read from
+  the active PM table rather than hardcoded by the front-end.
 - SMU settings are volatile — a reboot reverts everything to BIOS constraints. That is
   also your recovery path.
 

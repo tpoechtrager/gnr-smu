@@ -1,15 +1,15 @@
 # Full Snapshot — Default BIOS State (Post-Reboot)
 
-**Date :** 2026-04-11 00:26 CEST | Uptime : 7 min (fresh reboot)  
-**Kernel :** 6.19.11-1-cachyos | **BIOS :** ASRock B65IRW v4.10  
+**Date:** 2026-04-11 00:26 CEST | **Uptime:** 7 min (fresh reboot)
+**Kernel:** 6.19.11-1-cachyos | **BIOS:** ASRock B65IRW v4.10
 
 ---
 
 ## CPU Identification
 
-| Champ | Valeur |
+| Field | Value |
 |-------|--------|
-| Modèle | AMD Ryzen 7 9800X3D 8-Core Processor |
+| Model | AMD Ryzen 7 9800X3D 8-Core Processor |
 | Family/Model | 26 / 68 (0x1A / 0x44) — Zen 5 Granite Ridge |
 | Cores / Threads | 8 cores / 16 threads (SMT) |
 | Min freq | 624.476 MHz |
@@ -18,12 +18,12 @@
 | L2 | 8 MiB (8 instances) |
 | L3 (V-Cache) | **96 MiB** (1 instance) |
 | NUMA | 1 node (0-15) |
-| Virtualisation | AMD-V |
-| ISA notable | AVX512F/DQ/BW/VL, AVX512_BF16, SHA_NI, VAES |
+| Virtualization | AMD-V |
+| Notable ISA | AVX512F/DQ/BW/VL, AVX512_BF16, SHA_NI, VAES |
 
 ## RAM
 
-| Slot | Modèle | Type | Speed | Configured | Voltage |
+| Slot | Model | Type | Speed | Configured | Voltage |
 |------|--------|------|-------|------------|---------|
 | DIMM A | G.Skill F5-6000J3038F16G | DDR5 Unbuffered | 4800 MT/s | **6000 MT/s** (XMP) | 1.1V |
 | DIMM B | G.Skill F5-6000J3038F16G | DDR5 Unbuffered | 4800 MT/s | **6000 MT/s** (XMP) | 1.1V |
@@ -33,13 +33,13 @@
 
 ```
 00:00.0  AMD Raphael/Granite Ridge Root Complex [1022:14d8]
-         → SMN addr : offset PCI 0xB8 (DWORD)
-         → SMN data : offset PCI 0xBC (DWORD)
+         → SMN address: PCI offset 0xB8 (DWORD)
+         → SMN data:    PCI offset 0xBC (DWORD)
 ```
 
 ## amd-pstate-epp (CPUFreq)
 
-| Paramètre | Valeur |
+| Parameter | Value |
 |-----------|--------|
 | governor | performance |
 | energy_performance_preference | performance |
@@ -50,37 +50,37 @@
 | hw_prefcore | enabled |
 | prefcore_ranking cpu0 | 181 |
 | prefcore_ranking cpu4 | 191 ← preferred core |
-| boost | 1 (activé) |
+| boost | 1 (enabled) |
 
 ## MSR P-States
 
 | P-state | Raw | Enabled | Note |
 |---------|-----|---------|------|
-| P0 (MSR C0010064) | 0x800000004BF243AC | oui | Boost |
-| P1 (MSR C0010065) | 0x80000000479E4258 | oui | Base |
+| P0 (MSR C0010064) | 0x800000004BF243AC | yes | Boost |
+| P1 (MSR C0010065) | 0x80000000479E4258 | yes | Base |
 | P2–P7 | 0x0 | no | Unused |
 | MSR_PSTATE_CUR_LIM | 0x10 | — | MaxPstate=1, HwLimit=P0 |
-| MSR_PSTATE_CTL | 0x0 | — | P-state cible = P0 |
+| MSR_PSTATE_CTL | 0x0 | — | Target P-state = P0 |
 
 ## RAPL (Energy Reporting)
 
-| Registre | Valeur |
+| Register | Value |
 |----------|--------|
 | RAPL_PWR_UNIT (0xC0010299) | 0xA1000 |
 | PowerUnit | 2^0 = 1 W/LSB (1000 mW/LSB) |
 | EnergyUnit | 2^-16 J = 15.259 µJ/LSB |
 | TimeUnit | 2^-10 s |
-| PKG_ENERGY au reboot+7min | 0x466E603F → **18 030 J** (~43W avg) |
+| PKG_ENERGY at reboot+7min | 0x466E603F → **18 030 J** (~43W avg) |
 | RAPL powercap package-0 | **disabled** (enabled=0) |
 
-Note: RAPL is disabled via powercap → do not use `/sys/class/powercap` for measurements.  
+Note: RAPL is disabled via powercap; do not use `/sys/class/powercap` for measurements.
 Use `turbostat` (APERF/MPERF) instead.
 
 ## Temperatures (Idle)
 
-| Capteur | Valeur | Source |
+| Sensor | Value | Source |
 |---------|--------|--------|
-| Tctl (CPU dié) | 50.0°C | k10temp |
+| Tctl (CPU die) | 50.0°C | k10temp |
 | Tccd1 | 38.8–42.5°C | k10temp |
 | RAM slot A | 44.0°C | spd5118 |
 | RAM slot B | 42.75°C | spd5118 |
@@ -89,27 +89,27 @@ Use `turbostat` (APERF/MPERF) instead.
 | GPU edge (iGPU) | 46.0°C | amdgpu |
 | WiFi (MT7921) | 54.0°C | mt7921 |
 
-## Tensions (hwmon)
+## Voltages (hwmon)
 
-| Rail | Valeur | Source |
+| Rail | Value | Source |
 |------|--------|--------|
 | vddgfx (iGPU) | **1209 mV** | amdgpu hwmon |
 | vddnb (NorthBridge/SoC) | **945 mV** | amdgpu hwmon |
 | GPU sclk | 600 MHz (idle) | amdgpu hwmon |
 
-Note : VCC core CPU (SVI3 VDDCR_CPU) non exposé via hwmon sur Zen 5.  
-Les adresses SMN SVI3 classiques (0xE0080, 0xE00A0) retournent 0xFFFFFFFF → pas mappées.
+Note: CPU VCC core (SVI3 VDDCR_CPU) is not exposed via hwmon on Zen 5.
+The usual SMN SVI3 addresses (0xE0080, 0xE00A0) return 0xFFFFFFFF and are not mapped.
 
 ## iGPU
 
-| Param | Valeur |
+| Parameter | Value |
 |-------|--------|
 | sclk | 600 MHz (idle) |
 | PPT GPU | 10 mW (idle) |
 
 ## SMU MP1
 
-| Info | Valeur |
+| Info | Value |
 |------|--------|
 | Version | **98.75.0** (raw 0x00624B00) |
 | Mailbox MSG | 0x3B10530 |
@@ -117,24 +117,24 @@ Les adresses SMN SVI3 classiques (0xE0080, 0xE00A0) retournent 0xFFFFFFFF → pa
 | Mailbox ARG0 | 0x3B109C4 |
 | ARG1-4 | 0x3B109C8 / CC / D0 / D4 |
 
-### Registres SMN non-nuls au repos (zone 0x3B10500-0x3B10600)
+### Non-zero SMN registers at idle (zone 0x3B10500-0x3B10600)
 
-| Adresse | Valeur | Interprétation |
+| Address | Value | Interpretation |
 |---------|--------|----------------|
 | 0x3B10504 | 0x08 | SMU version major (8) |
 | 0x3B10508 | 0x16 | SMU version minor (22) |
-| 0x3B1050C | 0x06 | SMU version patch (6) → **8.22.6** via registres statiques |
-| 0x3B10530 | 0x01 | MSG = 1 (dernière cmd TestMessage) |
-| 0x3B1054C | 0x01 | autre RSP ? |
-| 0x3B10564 | 0x01 | autre RSP ? |
+| 0x3B1050C | 0x06 | SMU version patch (6) → **8.22.6** via static registers |
+| 0x3B10530 | 0x01 | MSG = 1 (last TestMessage command) |
+| 0x3B1054C | 0x01 | alternate RSP? |
+| 0x3B10564 | 0x01 | alternate RSP? |
 | 0x3B10570 | 0x01 | status |
-| 0x3B10574 | 0x01 | RSP mailbox alternatif (rejette les cmds power) |
-| 0x3B1057C | 0x01 | RSP mailbox principal ✓ |
-| 0x3B10994 | **0x258 = 600** | Fréq min CPU en MHz ? |
+| 0x3B10574 | 0x01 | alternate RSP mailbox (rejects power commands) |
+| 0x3B1057C | 0x01 | primary RSP mailbox ✓ |
+| 0x3B10994 | **0x258 = 600** | CPU minimum frequency in MHz? |
 | 0x3B10998 | 0x01 | status |
 | 0x3B1099C | 0x01 | status |
 
-### MSG IDs Discovery 0x00–0x0D
+### MSG ID discovery 0x00–0x0D
 
 | MSG | RSP | ARG0_ret | Interpretation |
 |-----|-----|----------|----------------|
@@ -148,7 +148,7 @@ Les adresses SMN SVI3 classiques (0xE0080, 0xE00A0) retournent 0xFFFFFFFF → pa
 | 0x08 | 0x01 ✓ | 0x00 | ? |
 | 0x09 | 0xFD ✗ | 0x00 | Rejected |
 | 0x0A | 0x01 ✓ | 0x00 | ? |
-| 0x0B | 0xFF  | 0x00 | Unknown Error |
+| 0x0B | 0xFF  | 0x00 | Unknown error |
 | 0x0C | 0x01 ✓ | 0x00 | ? (GetPMTableVersion ?) |
 | 0x0D | 0x01 ✓ | **0x20444D41 = "AMD "** | Signature ? |
 | 0x3C | 0x01 ✓ | — | SetTDCLimit (mA) — corrected 2026-08-26, see below |
@@ -160,55 +160,55 @@ Les adresses SMN SVI3 classiques (0xE0080, 0xE00A0) retournent 0xFFFFFFFF → pa
 
 **⚠ The `✓` column only means the SMU returned `RSP=0x01`.** That is "message accepted",
 not "the field is what this row says". 0x3C and 0x3D were labelled from that column alone
-and were the wrong way round for it: `research/probe_tdc_edc.py` writes a distinctive
-value and reads back which PM-table limit moved, and finds `0x3C` moves `d[8]` (TDC)
-while `0x3D` moves `d[63]` (EDC). Every other `?` and guessed name in this table rests on
-the same weak evidence and should be read as untested.
+and were initially reversed: `research/probe_tdc_edc.py` writes a distinctive value and
+reads back which PM-table limit moved, finding that `0x3C` moves `d[8]` (TDC) while
+`0x3D` moves `d[63]` (EDC). Every other `?` and guessed name in this table rests on the
+same weak evidence and should be read as untested.
 
-## Turbostat (idle système, Brave actif ~73% CPU)
+## Turbostat (idle system, Brave active at ~73% CPU)
 
-| Métrique | Valeur |
+| Metric | Value |
 |----------|--------|
 | Bzy_MHz avg | 5220–5392 MHz |
-| PkgWatt | 31–103 W (variable selon charge Brave) |
+| PkgWatt | 31–103 W (variable with Brave load) |
 | LLC%hit | ~77–81% |
 | IPC | ~0.84–0.94 |
-| C3% (idle) | ~70–80% au repos |
+| C3% (idle) | ~70–80% at idle |
 
 ## Throttle Reason MSR (0xC0010292)
 
-Raw = 0x104004189 — **registre sticky** (historique depuis boot) :
+Raw = 0x104004189 — **sticky register** (history since boot):
 - bit0: PROCHOT_VID
 - bit3: VRM_HOT  
 - bit7: PROCHOT_CPUPWR
 - bit8: PROCHOT_SOCPWR
 
-⚠ Ces bits sont probablement des résidus de l'épisode PPT=0mW de la session précédente (avant le reboot). À surveiller en conditions normales.
+⚠ These bits are probably remnants of the PPT=0mW incident from the previous session (before reboot). Monitor them under normal conditions.
 
 ## Restore / Recovery
 
 ```bash
-# Restore limites BIOS estimées
+# Restore estimated BIOS limits
 sudo python3 ~/gnr-smu/research/smu_send.py reset
 # = PPT 162W + TDC 120A + EDC 180A (stock; 160/220 are PBO figures, not a reset)
 
-# Si CPU reste à 606 MHz après reset → reboot (tout est 100% volatile)
+# If the CPU remains at 606 MHz after reset → reboot (everything is 100% volatile)
 sudo reboot
 ```
 
-## Valeurs BIOS par défaut
+## BIOS Default Values
 
-Corrigé 2026-08-26 : la table ci-dessous était estimée et fausse sur trois lignes. Les
-trois limites et le TjMax se lisent directement dans la PM table, aucune estimation
-nécessaire.
+Corrected 2026-08-26: the table below was estimated and incorrect on three lines. The
+three limits and configured thermal limit can be read directly from the PM table; no
+estimation is required.
 
-| Limite | Valeur | Source |
+| Limit | Value | Source |
 |--------|--------|--------|
-| PPT | 162 W | `d[2]`, = spec stock 9800X3D |
-| TDC | 120 A | `d[8]` (était noté 85 A) |
-| EDC | 180 A | `d[63]` (était noté 120 A) |
-| TjMax | 88 °C | `d[10]` (était noté 85 °C) |
-| SlowPPT | ~88W | estimé, ~0.55 × PPT (typical STAPM) — non vérifié |
+| PPT | 162 W | `d[2]`, = stock 9800X3D spec |
+| TDC | 120 A | `d[8]` (was listed as 85 A) |
+| EDC | 180 A | `d[63]` (was listed as 120 A) |
+| Thermal Limit | 95 °C | `d[10]` (was listed as 85 °C) |
+| SlowPPT | ~88W | estimated, ~0.55 × PPT (typical STAPM) — not verified |
 
 ⚠ These default values are **not readable** via mailbox (no known Get function).
 
@@ -217,5 +217,5 @@ nécessaire.
 1. **`ppt 0` = 0 mW = total throttle** → CPU locks to 606 MHz. DO NOT DO THIS.
 2. **`/proc/cpuinfo "cpu MHz"` is FAKE** on amd-pstate-epp (shows 606 even at 5 GHz).
 3. **`turbostat Bzy_MHz` = REAL** (硬件 APERF/MPERF).
-4. **7z is cache-bound** on 9800X3D (96MB V-Cache) → ignores PPT changes usually.
+4. **7z is cache-bound** on the 9800X3D (96MB V-Cache) → usually ignores PPT changes.
 5. **RAPL powercap is disabled** → do not use `/sys/class/powercap`.

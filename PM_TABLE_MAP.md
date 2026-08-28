@@ -23,7 +23,7 @@ followed by its live value in the *same* unit. See
 | 0x010 | 4-7 | 0 | Y | Reserved (fast/slow PPT pair, unused) | CONFIRMED |
 | 0x020 | 8 | 120.0 | Y | **TDC Limit (A)** — 9800X3D stock TDC is 120 A | CONFIRMED |
 | 0x024 | 9 | 9 idle / 87 load | N | **TDC Value — live current (A)** | CONFIRMED (idle 9.3 → load 86.7 A, ceiling = 120 limit) |
-| 0x028 | 10 | 88.0 | Y | **THM Limit (°C)** — thermal limit, *not* a current | CONFIRMED (reads 88.0 on this board; doc previously said 85.0) |
+| 0x028 | 10 | 95.0 | Y | **THM Limit (°C)** — thermal limit, *not* a current | CONFIRMED (profile value; not a current) |
 | 0x02C | 11 | 49 idle / 83 load | N | **THM Value — Tctl (°C), direct reading** | CONFIRMED (slope 0.97 vs k10temp Tctl, absolute match within 1.1 °C at idle *and* load) |
 
 ## Zone 0x030 — Reserved
@@ -451,7 +451,7 @@ clearly above that at idle.
 | 0x6F4 | 445 | ~3.1 | N | Package Energy Rate (W) | MED |
 | 0x6F8 | 446 | 0.23 idle → 0.33 load | N | Scalar (load-dependent) | LOW |
 | 0x6FC | 447 | 0.950 | Y | SVI3 Reference Voltage (V) | MED |
-| 0x700 | 448 | ~36.9 → ~55.3 | N | Heavily filtered thermal value (°C), **not** the core-temp average — at 60 s steady load the real core average is 78.3 °C while this reads 55.3 °C | LOW (was "Average Core Temp / HIGH") |
+| 0x700 | 448 | ~36.9 → ~55.3 | N | **L3 Cache temperature (CCD1, °C).** The 0x620105 profile uses this direct per-CCD L3 lane. Its slower/lower response than the core average is expected for a distinct cache temperature domain. | CONFIRMED |
 | 0x704 | 449 | ~35.5 → ~53.4 | N | Same filtered signal as d[448], offset ~−1.9 °C. **Not** min core temp (real min 74.9 °C vs 53.4 °C) | LOW (was "Min Core Temp / HIGH") |
 | 0x708 | 450 | ~5.43 | N | Peak Core Frequency (GHz) | HIGH |
 | 0x70C | 451 | ~5.44 | N | Average Core Frequency (GHz) | HIGH |
@@ -556,7 +556,7 @@ Validated by comparing PM table values against `k10temp`, `amdgpu`, `spd5118`, `
 | d[64] 0x100 | 44→97 (and 90→104 in another run) | k10temp Tctl | 49→84°C | **NO — not a temperature at all** |
 | d[210] 0x348 | 15→100.00 (pinned) | k10temp Tccd1 | 38→83°C | **NO — a percentage** |
 | d[186] 0x2E8 | 0.003→0.015 | amdgpu edge | iGPU idle | **NO — iGPU activity %** |
-| d[448] 0x700 | 36.9→55.3 | core temp average d[317-324] | 36.4→78.3°C | **NO — heavily filtered, not the average** |
+| d[448] 0x700 | 36.9→55.3 | core temp average d[317-324] | 36.4→78.3°C | **Distinct L3 Cache temperature (CCD1), not a core-temperature average** |
 
 ### Reading the PM table perturbs the measurement (2026-07-30)
 
@@ -601,7 +601,7 @@ What actually went wrong, and the corrected labels:
 | 0x00C d[3] | Package Thermal Metric (encoded °C) | **PPT Value (W)** |
 | 0x020 d[8] | EDC Limit (A) | **TDC Limit (A)** — 120 A |
 | 0x024 d[9] | SoC Temperature Metric (encoded °C) | **TDC Value (A)** |
-| 0x028 d[10] | TDC Limit (A) | **THM Limit (°C)** — 88 °C |
+| 0x028 d[10] | TDC Limit (A) | **THM Limit (°C)** — 95 °C |
 | 0x02C d[11] | VRM / Hotspot Temp | **THM Value = Tctl (°C)** |
 | 0x0FC d[63] | EDC Max (A) | **EDC Limit (A)** — 180 A (unchanged, just renamed) |
 | 0x100 d[64] | Thermal Metric | unidentified utilization metric |
@@ -610,16 +610,49 @@ What actually went wrong, and the corrected labels:
 | 0x438 d[270] | TDC Current Value (A) | **Hotspot Temperature (°C)** |
 | 0x458 d[278] | PPT Current Value (W) | unidentified, near-static |
 | 0x4A8/0x4AC d[298/299] | L3/V-Cache Temp | slow thermal, domain unconfirmed |
-| 0x700/0x704 d[448/449] | Average / Min Core Temp | filtered thermal, not core stats |
+| 0x700/0x704 d[448/449] | Average / Min Core Temp | d[448] is L3 Cache temperature (CCD1); d[449] remains a related, unidentified thermal lane |
 | 0x710 d[452] | Total Package Energy (J) | countdown/credit — decreases under load |
 
 The `(LIMIT, VALUE)` pairing is what makes zone 0x000 unambiguous: 0x00C peaks at 128 W
 under a 162 W limit, 0x024 peaks at 86.7 A under a 120 A limit, and 0x02C peaks at 82.8 °C
-under an 88 °C limit. Three fields, three units, each pinned by the limit directly above it.
+under a 95 °C limit. Three fields, three units, each pinned by the limit directly above it.
 
 **Still open:** no `EDC_VALUE` companion for d[63] was found — `stress-ng --cpu` is an
 integer load and may simply not push EDC high enough to identify the field. Retry with an
 AVX-512 heavy load.
+
+## External SMN thermal/status registers
+
+These values are read directly from profile-approved SMN registers and are not
+part of the PM-table float map used by this document:
+
+| Signal | SMN address | Decode |
+|---|---:|---|
+| Tctl/Tdie | `0x59800` | `(raw >> 21) × 0.125 °C`, with the register's `-49 °C` range flag |
+| CCD1 temperature | `0x59B08` | validity bit 11; bits 0..10 × 0.125 - 49 °C |
+| PROCHOT EXT | `0x59804` | bit 2 (`0x04`) |
+| PROCHOT CPU | `0x59804` | bit 3 (`0x08`) |
+| HTC | `0x59804` | bit 4 (`0x10`) |
+
+The 9800X3D GUI and exporter use these read-only paths in addition to the
+PM-table fields. Unknown profiles do not inherit these addresses.
+
+## External SMN IOD temperature lanes
+
+IOD temperatures are read from profile-approved SMN registers and are not
+part of the PM-table float map. The 9800X3D profile uses lanes 1, 2, 4 and 5:
+
+| Lane | SMN address | Encoding |
+|---:|---:|---|
+| 1 | `0x59828` | validity bit 11; bits 12..23 × 0.125 - 49 °C |
+| 2 | `0x5982c` | validity bit 11; bits 12..23 × 0.125 - 49 °C |
+| 4 | `0x59834` | validity bit 11; bits 12..23 × 0.125 - 49 °C |
+| 5 | `0x59838` | validity bit 11; bits 12..23 × 0.125 - 49 °C |
+
+Only the validity bit determines whether a lane is available; the encoded
+temperature may be below 0 °C. The implementation keeps selector-dependent
+alternative TMON bases out of the normal telemetry view because they are
+alternative paths, not additional channels.
 
 ## EDC_VALUE — closed, negative result (2026-07-30)
 
@@ -645,7 +678,7 @@ the answer — benchmarked by peak TDC value:
 `--matrix` is what actually loads the current rails.
 
 Under `--matrix 16` the part reaches 100.9 A of its 120 A TDC and Tctl pins at
-exactly 88.0 °C — the thermal limit, i.e. as hard as this cooling can push. At
+exactly 95.0 °C — the thermal limit, i.e. as hard as this cooling can push. At
 that point the only floats reading between 100 and 180 are known constants (162 =
 PPT limit, 120 = TDC limit and its copies, 138 = PPT value in **watts**) and
 percentages saturated at 100. Nothing behaves like a current climbing toward 180.

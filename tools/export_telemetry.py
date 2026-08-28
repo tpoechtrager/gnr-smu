@@ -17,6 +17,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import get_hardware_profile  # noqa: E402
+from smn_telemetry import read_profile_iod_lanes, read_profile_prochot_status  # noqa: E402
 
 PM_TABLE_PATH = "/sys/kernel/ryzen_smu_drv/pm_table"
 VERSION_PATH  = "/sys/kernel/ryzen_smu_drv/pm_table_version"
@@ -81,6 +82,20 @@ def global_fields(profile):
 
 def named_fields(profile):
     fields = global_fields(profile)
+    if profile.ccd_l3_temperature is not None:
+        for ccd in range(profile.ccd_count):
+            fields.append(
+                (f"ccd{ccd + 1}_l3_cache", profile.ccd_l3_temperature + ccd, "C")
+            )
+    if profile.prochot_smn_address is not None:
+        fields += [
+            ("prochot_cpu", None, "Yes/No"),
+            ("prochot_ext", None, "Yes/No"),
+            ("htc", None, "Yes/No"),
+        ]
+    if profile.iod_smn_temp_addresses:
+        fields += [(f"iod_lane_{lane}", None, "C")
+                   for lane in range(len(profile.iod_smn_temp_addresses))]
     for core in range(profile.cores):
         fields.append((f"c{core}_power", profile.core_power + core, "W"))
         fields.append((f"c{core}_voltage", profile.core_voltage + core, "V"))
@@ -144,6 +159,8 @@ def floats_to_row(d, ts, profile, fields=None):
     row = {}
     fields = fields or named_fields(profile)
     vcores = [d[profile.core_voltage + i] for i in range(profile.cores)]
+    thermal = read_profile_prochot_status(profile)
+    iod_lanes = read_profile_iod_lanes(profile)
     for name, idx, _ in fields:
         if name == "timestamp":
             row[name] = f"{ts:.3f}"
@@ -151,6 +168,13 @@ def floats_to_row(d, ts, profile, fields=None):
             row[name] = f"{max(vcores):.4f}"
         elif name == "vcore_avg":
             row[name] = f"{sum(vcores)/profile.cores:.4f}"
+        elif name in thermal:
+            value = thermal[name]
+            row[name] = "Unavailable" if value is None else ("Yes" if value else "No")
+        elif name.startswith("iod_lane_"):
+            lane = int(name.rsplit("_", 1)[1])
+            value = iod_lanes[lane] if lane < len(iod_lanes) else None
+            row[name] = "Unavailable" if value is None else f"{value:.4f}"
         else:
             row[name] = f"{d[idx]:.4f}"
     return row

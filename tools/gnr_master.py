@@ -86,6 +86,20 @@ def ask_limit(name, unit, max_val):
     return v
 
 
+def ask_thermal_limit():
+    """Read a whole-degree Tctl/HTC limit in the SMU-supported range."""
+    raw = input("Thermal Limit (°C, 52-100): ")
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"[ERROR] not a number: {raw!r}")
+        return None
+    if value < 52 or value > 100 or not value.is_integer():
+        print(f"[ERROR] Thermal Limit must be a whole value between 52 and 100 °C, got {value}")
+        return None
+    return value
+
+
 def main():
     profile, _ = get_hardware_profile()
     cores = profile.cores if profile else 8
@@ -98,9 +112,10 @@ def main():
     print("1. Set PPT Limit (Watts)")
     print("2. Set Custom TDC (Amps)")
     print("3. Set Custom EDC (Amps)")
-    print("4. Apply -30 CO All Cores")
-    print("5. Reset All Settings")
-    print("6. Quit")
+    print("4. Set Thermal Limit (°C)")
+    print("5. Apply -30 CO All Cores")
+    print("6. Reset All Settings")
+    print("7. Quit")
     
     choice = input("Option: ")
     
@@ -117,6 +132,13 @@ def main():
         if a is not None:
             apply_cmd(profile.edc_msg, int(a * 1000))
     elif choice == '4':
+        if profile.thermal_msg is None:
+            print(f"[BLOCKED] Thermal Limit is not supported by the {profile.name} profile")
+            return
+        value = ask_thermal_limit()
+        if value is not None:
+            apply_cmd(profile.thermal_msg, int(value))
+    elif choice == '5':
         applied = True
         for i in range(cores):
             msg_id, arg0 = curve_optimizer_command(profile, i, -30)
@@ -126,7 +148,7 @@ def main():
         if applied:
             save_co_config(-30)
             print("CO -30 applied and saved locally for the GUI!")
-    elif choice == '5':
+    elif choice == '6':
         applied = apply_cmd(profile.ppt_msg, profile.stock_ppt * 1000)
         if applied:
             applied = apply_cmd(profile.tdc_msg, profile.stock_tdc * 1000)

@@ -31,7 +31,7 @@ For a complete variable-to-byte mapping, reference **[PM_TABLE_MAP.md](../PM_TAB
 - **iGPU Clock (sclk):** Offset `0x1B0` — validated vs amdgpu freq1_input.
 - **iGPU Power (W):** Offset `0x1AC`.
 - **Core Temperatures (°C):** Offsets `0x4F4-0x510` — direct °C, validated vs k10temp.
-- **Tctl (°C):** Offset `0x02C` — direct °C, matches k10temp Tctl within 1.1 °C at idle and at load. Its thermal limit sits at `0x028` (88 °C).
+- **Tctl (°C):** Offset `0x02C` — direct °C, matches k10temp Tctl within 1.1 °C at idle and at load. Its configured THM/HTC limit sits at `0x028` (95 °C for the supported profiles).
 - **Hotspot (°C):** Offset `0x438` — direct °C, 0-3 °C above Tctl on average, but very spiky (single reads hit +14 °C at idle). Average it. Previously mislabeled "TDC current".
 - **VDDCR_SoC:** Offset `0x0D4` (0.954V) — matches amdgpu vddnb (0.945V, 9mV delta).
 - **Vcore P1:** Offset `0x0C4` (1.213V) — matches amdgpu vddgfx (1.220V).

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hwgate import (curve_optimizer_command, get_hardware_profile,
                     hardware_supported, msg_id_blocked, smu_message_supported,
                     smu_writes_supported)  # noqa: E402
+from smn_telemetry import read_profile_iod_lanes, read_profile_prochot_status  # noqa: E402
 
 # --- Color Theme ---
 BG_MAIN = "#101722"
@@ -126,19 +127,20 @@ class KernelLogWorker(QThread):
 
 # ================= CONTROL DIALOGS =================
 class PowerControlDialog(QDialog):
-    def __init__(self, cur_ppt, cur_tdc, cur_edc, parent=None):
+    def __init__(self, cur_ppt, cur_tdc, cur_edc, cur_thermal, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Power & Thermal Controls")
         self.setStyleSheet(
             f"background-color: {BG_MAIN}; color: {TEXT_MAIN}; font-family: 'Segoe UI';"
         )
-        self.setFixedSize(300, 250)
+        self.setFixedSize(320, 300)
         layout = QVBoxLayout(self)
         self.inputs = {}
         configs = [
             ("PPT", 250, "W", cur_ppt),
             ("TDC", 200, "A", cur_tdc),
             ("EDC", 250, "A", cur_edc),
+            ("Thermal Limit", 100, "°C", cur_thermal),
         ]
 
         for name, max_val, unit, current_val in configs:
@@ -146,7 +148,16 @@ class PowerControlDialog(QDialog):
             lbl = QLabel(name)
             lbl.setStyleSheet("font-weight: bold; width: 40px;")
             spin = QDoubleSpinBox()
-            spin.setRange(0, max_val)
+            # Keep the thermal control in a conservative, useful range.  The
+            # SMU command takes whole degrees Celsius; values above 100 °C
+            # would weaken the silicon's thermal protection.
+            if name == "Thermal Limit":
+                # AMD's published HTC control rejects values below 52 °C.
+                spin.setRange(52, max_val)
+                spin.setDecimals(0)
+                spin.setSingleStep(1)
+            else:
+                spin.setRange(0, max_val)
             spin.setSuffix(f" {unit}")
             spin.setStyleSheet(
                 f"background-color: {BG_PANEL}; border: 1px solid {BORDER}; padding: 5px;"
@@ -237,6 +248,7 @@ class TelemetryPanel(QFrame):
 class GNRMaster(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._smn_readable = bool(getattr(os, "geteuid", lambda: 0)() == 0)
         self.profile, self.profile_reason = get_hardware_profile()
         self.core_count = self.profile.cores if self.profile else 8
         cpu_name = self.profile.name if self.profile else "Unsupported CPU"
@@ -253,11 +265,13 @@ class GNRMaster(QMainWindow):
         self._preferences_timer = QTimer(self)
         self._preferences_timer.setSingleShot(True)
         self._preferences_timer.timeout.connect(self._save_sensor_preferences)
-        self.current_ppt, self.current_tdc, self.current_edc = self._read_pm_limits()
+        (self.current_ppt, self.current_tdc, self.current_edc,
+         self.current_thermal) = self._read_pm_limits()
         self.current_co = self.load_co_config()
 
         self._build_interface()
         self._restore_window_size()
+        self._show_unprivileged_warning()
 
         self.log_msg(
             "Dashboard initialized. Listening to kernel logs...", "STATUS", ACCENT_GREEN
@@ -357,9 +371,19 @@ class GNRMaster(QMainWindow):
         status_layout.setContentsMargins(12, 5, 9, 5)
         status_layout.setSpacing(8)
         self.summary_values = {}
-        self._add_summary_metric(status_layout, "cpu", "CPU", ACCENT_ORANGE)
+        self.summary_widgets = {}
+        cpu_summary = self._add_summary_metric(status_layout, "cpu", "CPU", ACCENT_ORANGE)
+        ccd_summaries = []
         for ccd in range(max(1, (self.core_count + 7) // 8)):
-            self._add_summary_metric(status_layout, f"ccd{ccd}", f"CCD{ccd + 1}", ACCENT_CYAN)
+            ccd_summaries.append(
+                self._add_summary_metric(
+                    status_layout, f"ccd{ccd}", f"CCD{ccd + 1}", ACCENT_CYAN
+                )
+            )
+        if not self._smn_readable:
+            cpu_summary.hide()
+            for summary in ccd_summaries:
+                summary.hide()
         self._add_summary_separator(status_layout)
         self._add_summary_metric(status_layout, "frequency", "FREQ", ACCENT_PURPLE)
         self._add_summary_separator(status_layout)
@@ -440,6 +464,35 @@ class GNRMaster(QMainWindow):
         layout.addWidget(self.sensor_tree)
         return page
 
+    def _show_unprivileged_warning(self):
+        """Explain why direct SMN sensors are hidden without root privileges."""
+        suppress_warning = self.config.get("suppress_unprivileged_warning")
+        if suppress_warning is None:
+            # Migrate the short-lived inverse setting used by an earlier dialog
+            # version without changing the default for existing configurations.
+            suppress_warning = self.config.get("show_unprivileged_warning") is False
+        if self._smn_readable or suppress_warning:
+            return
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("Limited telemetry without root")
+        message.setText(
+            "Some telemetry requires root privileges and is hidden for this session:\n\n"
+            "• CPU Tctl/Tdie and CCD temperatures\n"
+            "• IOD temperatures (all lanes)\n"
+            "• PROCHOT CPU, PROCHOT EXT and HTC status\n\n"
+            "These readings use direct SMN access. The SMN interface requires the "
+            "register address to be written before it can be read, and that write "
+            "operation is restricted to root. PM-table telemetry remains available.\n\n"
+            "Start GNR Master with sudo to display the hidden sensors."
+        )
+        suppress_warning = QCheckBox("Don't show this warning again")
+        suppress_warning.setChecked(False)
+        message.setCheckBox(suppress_warning)
+        message.setStandardButtons(QMessageBox.StandardButton.Ok)
+        message.exec()
+        self._save_config({"suppress_unprivileged_warning": suppress_warning.isChecked()})
+
     def _add_summary_section(self, layout, title):
         label = QLabel(title)
         label.setStyleSheet(
@@ -453,6 +506,7 @@ class GNRMaster(QMainWindow):
         separator.setStyleSheet(f"background: {BORDER}; border: none;")
         separator.setFixedWidth(1)
         layout.addWidget(separator)
+        return separator
 
     def _add_summary_metric(self, layout, key, title, color, minimum_width=0):
         metric = QWidget()
@@ -475,6 +529,8 @@ class GNRMaster(QMainWindow):
         metric_layout.addWidget(value_label)
         layout.addWidget(metric)
         self.summary_values[key] = value_label
+        self.summary_widgets[key] = metric
+        return metric
 
     def _set_summary(self, key, value):
         label = self.summary_values.get(key)
@@ -519,49 +575,75 @@ class GNRMaster(QMainWindow):
         parent.addChild(item)
         self.sensor_items[key] = item
         self.sensor_units[key] = unit
+        return item
 
     def _build_sensor_tree(self):
         temperatures = self._add_sensor_group(None, "Temperatures")
-        self._add_sensor(
+        tctl_item = self._add_sensor(
             temperatures, "tctl", "CPU (Tctl/Tdie)", "°C",
             "Direct Tctl/Tdie sensor via the profile-approved SMN register.",
         )
+        tctl_item.setHidden(not self._smn_readable)
         for ccd in range(max(1, (self.core_count + 7) // 8)):
-            self._add_sensor(
+            ccd_item = self._add_sensor(
                 temperatures, f"tccd{ccd}", f"CPU CCD{ccd + 1}", "°C",
                 "Direct CCD sensor via the profile-approved SMN register.",
             )
-        core_temps = self._add_sensor_group(temperatures, "Core Temperatures")
+            ccd_item.setHidden(not self._smn_readable)
+        core_temps = self._add_sensor_group(temperatures, "Cores")
         for core in range(self.core_count):
             self._add_sensor(core_temps, f"core_temp_{core}",
                              f"Core {core} (CCD{core // 8 + 1})", "°C")
 
-        l3 = self._add_sensor_group(None, "Experimental L3 candidates")
-        l3.setToolTip(0, "Low-confidence PM-table candidates. Raw index remains visible.")
-        if self.profile and self.profile.ccd_candidate_count:
-            for ccd in range(self.profile.ccd_candidate_count):
+        l3 = self._add_sensor_group(temperatures, "L3 Cache")
+        l3.setToolTip(0, "Per-CCD L3 cache temperature telemetry.")
+        if self.profile and self.profile.ccd_l3_temperature is not None:
+            for ccd in range(self.profile.ccd_count):
                 self._add_sensor(l3, f"ccd_l3_temp_{ccd}",
-                                 f"CCD L3 temperature? (CCD{ccd + 1}) · "
-                                 f"d[{self.profile.ccd_l3_temperature + ccd}]",
+                                 f"CCD{ccd + 1} L3 Cache",
                                  "°C",
-                                 "CCD-selective (rises with this CCD's own load); "
-                                 "a temperature-matched ALU-vs-cache-thrash test found it "
-                                 "rises an extra 4-8 K under cache load at the same core "
-                                 "temp, evidence of real L3 coupling (single run, not yet "
-                                 "repeated)")
+                                 "Per-CCD L3 cache temperature, validated for this profile.")
         else:
-            l3.setText(0, "Experimental CCD thermal & power candidates (not mapped for this profile)")
+            l3.setText(0, "Not mapped for this profile")
 
-        limits = self._add_sensor_group(None, "Limits & current")
-        self._add_sensor(limits, "ppt", "CPU PPT", "W")
-        self._add_sensor(limits, "ppt_limit", "CPU PPT Limit", "W")
-        self._add_sensor(limits, "tdc", "CPU TDC", "A")
-        self._add_sensor(limits, "tdc_limit", "CPU TDC Limit", "A")
+        iod = self._add_sensor_group(temperatures, "IOD")
+        iod.setToolTip(0, "Direct I/O-die temperature telemetry for this profile.")
+        iod.setHidden(not self._smn_readable)
+        if self.profile and self.profile.iod_smn_temp_addresses:
+            lane_numbers = getattr(self.profile, "iod_smn_lane_numbers", ())
+            for lane, address in enumerate(self.profile.iod_smn_temp_addresses):
+                lane_number = (lane_numbers[lane]
+                               if lane < len(lane_numbers) else lane + 1)
+                self._add_sensor(
+                    iod, f"iod_lane_{lane}",
+                    f"IOD Lane {lane_number} (SMN 0x{address:05X})", "°C",
+                    "Individual profile-approved I/O-die temperature lane.",
+                )
+        else:
+            iod.setText(0, "Not mapped for this profile")
+
+        limits_root = self._add_sensor_group(None, "CPU Limits")
+        power_limits = self._add_sensor_group(limits_root, "Package Power & Current")
+        self._add_sensor(power_limits, "ppt", "CPU PPT", "W")
+        self._add_sensor(power_limits, "tdc", "CPU TDC", "A")
         if self.profile and self.profile.edc_value is not None:
-            self._add_sensor(limits, "edc", "CPU EDC", "A",
+            self._add_sensor(power_limits, "edc", "CPU EDC", "A",
                              f"Live PM-table candidate d[{self.profile.edc_value}], not yet SMU-confirmed")
-        self._add_sensor(limits, "edc_limit", "CPU EDC Limit", "A")
-        self._add_sensor(limits, "thermal_limit", "Thermal Limit", "°C")
+
+        self._add_sensor(power_limits, "ppt_limit", "CPU PPT Limit", "W")
+        self._add_sensor(power_limits, "tdc_limit", "CPU TDC Limit", "A")
+        self._add_sensor(power_limits, "edc_limit", "CPU EDC Limit", "A")
+
+        temperature_limits = self._add_sensor_group(limits_root, "Thermal")
+        prochot_cpu = self._add_sensor(temperature_limits, "prochot_cpu", "Thermal Throttling (PROCHOT CPU)", "Yes/No",
+                         "Read-only status from the profile-approved thermal status register.")
+        prochot_ext = self._add_sensor(temperature_limits, "prochot_ext", "Thermal Throttling (PROCHOT EXT)", "Yes/No",
+                         "Read-only status from the profile-approved thermal status register.")
+        htc = self._add_sensor(temperature_limits, "htc", "Thermal Throttling (HTC)", "Yes/No",
+                         "Read-only status from the profile-approved thermal status register.")
+        for item in (prochot_cpu, prochot_ext, htc):
+            item.setHidden(not self._smn_readable)
+        self._add_sensor(temperature_limits, "thermal_limit", "Thermal Limit", "°C")
 
         power = self._add_sensor_group(None, "Power")
         for key, label in (
@@ -652,6 +734,8 @@ class GNRMaster(QMainWindow):
             return "--"
         if unit == "MHz":
             return f"{value:,.0f} MHz"
+        if unit == "Yes/No":
+            return "Yes" if value else "No"
         if unit in ("°C", "%"):
             return f"{value:.1f} {unit}"
         if unit in ("W", "A", "V"):
@@ -666,6 +750,12 @@ class GNRMaster(QMainWindow):
             return
         unit = self.sensor_units[key]
         item.setText(1, self._format_sensor_value(value, unit))
+        if unit == "Yes/No":
+            # A live or historical throttling event is an alert condition, not
+            # ordinary telemetry.  Colour every cell that renders as "Yes" so
+            # a latched maximum/average is visible even after the live state
+            # has returned to "No".
+            item.setForeground(1, QColor(ACCENT_RED if value else "#d6e6ff"))
         if value is None:
             return
         stat = self.sensor_stats.get(key)
@@ -680,6 +770,15 @@ class GNRMaster(QMainWindow):
         item.setText(2, self._format_sensor_value(stat[0], unit))
         item.setText(3, self._format_sensor_value(stat[1], unit))
         item.setText(4, self._format_sensor_value(stat[2] / stat[3], unit))
+        if unit == "Yes/No":
+            for column, status in (
+                (2, stat[0]),
+                (3, stat[1]),
+                (4, stat[2] / stat[3]),
+            ):
+                item.setForeground(
+                    column, QColor(ACCENT_RED if status else "#d6e6ff")
+                )
 
     def _reset_sensor_stats(self):
         self.sensor_stats.clear()
@@ -896,16 +995,19 @@ class GNRMaster(QMainWindow):
         if not self._smu_controls_available():
             return
         dlg = PowerControlDialog(
-            self.current_ppt, self.current_tdc, self.current_edc, self
+            self.current_ppt, self.current_tdc, self.current_edc,
+            self.current_thermal, self
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             requested = {
                 "PPT": dlg.inputs["PPT"].value(),
                 "TDC": dlg.inputs["TDC"].value(),
                 "EDC": dlg.inputs["EDC"].value(),
+                "Thermal Limit": dlg.inputs["Thermal Limit"].value(),
             }
             current = {"PPT": self.current_ppt, "TDC": self.current_tdc,
-                       "EDC": self.current_edc}
+                       "EDC": self.current_edc,
+                       "Thermal Limit": self.current_thermal}
             changed = {name: value for name, value in requested.items()
                        if abs(value - current[name]) >= 0.001}
             if not changed:
@@ -915,10 +1017,19 @@ class GNRMaster(QMainWindow):
                 "PPT": self.profile.ppt_msg,
                 "TDC": self.profile.tdc_msg,
                 "EDC": self.profile.edc_msg,
+                "Thermal Limit": self.profile.thermal_msg,
             }
             for name, value in changed.items():
-                if self.send_smu_cmd(commands[name], int(value * 1000)):
-                    setattr(self, f"current_{name.lower()}", value)
+                # PPT/TDC/EDC use milli-units; SetTctlMax takes whole °C.
+                arg0 = int(value if name == "Thermal Limit" else value * 1000)
+                if self.send_smu_cmd(commands[name], arg0):
+                    attr = {
+                        "PPT": "current_ppt",
+                        "TDC": "current_tdc",
+                        "EDC": "current_edc",
+                        "Thermal Limit": "current_thermal",
+                    }[name]
+                    setattr(self, attr, value)
                 else:
                     break
 
@@ -951,18 +1062,19 @@ class GNRMaster(QMainWindow):
         # Stock 9800X3D spec is the fallback: on unvalidated hardware these offsets
         # hold something else, and this feeds the write dialog's defaults.
         if not hardware_supported()[0]:
-            return 162.0, 120.0, 180.0
+            return 162.0, 120.0, 180.0, 95.0
         try:
             with open("/sys/kernel/ryzen_smu_drv/pm_table", "rb") as f:
                 d = struct.unpack(f"<{self.profile.float_count}f",
                                   f.read(self.profile.table_size))
             # PPT=d[2], TDC=d[8] (0x020), EDC=d[63] (0x0FC). Corrected 2026-07-30:
-            # this used to return d[10] as TDC — that offset is the thermal limit
-            # in °C (88), so the write dialog pre-filled TDC with 88 A and EDC
-            # with 120 A (the real TDC limit).
-            return d[2], d[8], d[63]
+            # this used to return d[10] as TDC — that offset is the configured
+            # configured thermal limit in °C, so the write dialog once pre-filled
+            # TDC and EDC from the wrong offsets. Read d[10] from the active
+            # profile instead of hardcoding a thermal value.
+            return d[2], d[8], d[63], d[10]
         except Exception:
-            return 162.0, 120.0, 180.0
+            return 162.0, 120.0, 180.0, 95.0
 
     def _core_frequency_mhz(self, table, core):
         """Use only an explicit, profile-approved PM-table frequency lane."""
@@ -972,7 +1084,8 @@ class GNRMaster(QMainWindow):
 
     def _update_sensor_tree(self, d):
         vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
-        tctl = read_profile_tctl_temperature(self.profile)
+        tctl = (read_profile_tctl_temperature(self.profile)
+                if self._smn_readable else None)
         self._set_sensor("tctl", tctl)
         self._set_summary("cpu", f"{tctl:.1f} °C" if tctl is not None else "--")
         self._set_sensor("ppt", d[3])
@@ -981,6 +1094,19 @@ class GNRMaster(QMainWindow):
         self._set_sensor("tdc_limit", d[8])
         self._set_sensor("edc_limit", d[63])
         self._set_sensor("thermal_limit", d[10])
+        self.current_thermal = d[10]
+        if self._smn_readable:
+            thermal = read_profile_prochot_status(self.profile)
+            self._set_sensor("prochot_cpu", thermal["prochot_cpu"])
+            self._set_sensor("prochot_ext", thermal["prochot_ext"])
+            self._set_sensor("htc", thermal["htc"])
+            iod_lanes = read_profile_iod_lanes(self.profile)
+            for lane, value in enumerate(iod_lanes):
+                key = f"iod_lane_{lane}"
+                self._set_sensor(key, value)
+                item = self.sensor_items.get(key)
+                if item is not None:
+                    item.setHidden(value is None)
         socket_power = d[26] if self.profile.pm_version == 0x620205 else d[20]
         self._set_sensor("socket_power", socket_power)
         if self.profile.edc_value is not None:
@@ -1017,7 +1143,8 @@ class GNRMaster(QMainWindow):
 
         ccd_count = max(1, (self.core_count + 7) // 8)
         for ccd in range(ccd_count):
-            ccd_temp = read_profile_ccd_temperature(self.profile, ccd)
+            ccd_temp = (read_profile_ccd_temperature(self.profile, ccd)
+                        if self._smn_readable else None)
             self._set_sensor(f"tccd{ccd}", ccd_temp)
             self._set_summary(
                 f"ccd{ccd}", f"{ccd_temp:.1f} °C" if ccd_temp is not None else "--"
@@ -1033,8 +1160,8 @@ class GNRMaster(QMainWindow):
             else:
                 self._set_sensor(f"ccd_c0_{ccd}", 100 - sum(cc6_values) / len(cc6_values))
             self._set_sensor(f"ccd_cc6_{ccd}", sum(cc6_values) / len(cc6_values))
-        if self.profile.ccd_candidate_count:
-            for ccd in range(self.profile.ccd_candidate_count):
+        if self.profile.ccd_count:
+            for ccd in range(self.profile.ccd_count):
                 self._set_sensor(f"ccd_l3_temp_{ccd}", d[self.profile.ccd_l3_temperature + ccd])
 
         frequencies = []
@@ -1082,6 +1209,7 @@ class GNRMaster(QMainWindow):
                     self.current_ppt = d[2]
                     self.current_edc = d[63]
                     self.current_tdc = d[8]
+                    self.current_thermal = d[10]
                     self._update_sensor_tree(d)
 
         except FileNotFoundError:
