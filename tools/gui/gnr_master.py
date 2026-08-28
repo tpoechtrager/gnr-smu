@@ -12,6 +12,7 @@ CONFIG_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "gnr_master.json",
 )
+SMN_PATH = "/sys/kernel/ryzen_smu_drv/smn"
 
 # Only exact, measured PM-table profiles are accepted; tools/hwgate.py owns the
 # offsets and refuses unknown CPU/table combinations.
@@ -55,24 +56,54 @@ def physical_core_cpu_ids():
     return [cores[key] for key in sorted(cores)]
 
 
-def read_hwmon_temperature(label):
-    """Read a named k10temp channel without assuming a hwmon number."""
-    for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
-        try:
-            with open(name_path) as f:
-                if f.read().strip() != "k10temp":
-                    continue
-            base = os.path.dirname(name_path)
-            for label_path in glob.glob(os.path.join(base, "temp*_label")):
-                with open(label_path) as f:
-                    if f.read().strip().lower() != label.lower():
-                        continue
-                input_path = label_path.replace("_label", "_input")
-                with open(input_path) as f:
-                    return float(f.read()) / 1000
-        except (OSError, ValueError):
-            continue
-    return None
+def decode_zen_tctl_smn_temperature(raw):
+    """Decode Zen's reported Tctl/Tdie SMN register."""
+    temp = (raw >> 21) * 0.125
+    # These flags select the -49 C temperature range in the kernel's k10temp
+    # decoder. Keep the exact register semantics here rather than deriving a
+    # temperature from a PM-table field.
+    if raw & (1 << 19) or (raw & 0x30000) == 0x30000:
+        temp -= 49.0
+    return temp
+
+
+def decode_ccd_smn_temperature(raw):
+    """Decode the Zen CCD-temperature register."""
+    if not raw & (1 << 11):
+        return None
+    return (raw & 0x7FF) * 0.125 - 49.0
+
+
+def read_smn_u32(address):
+    """Perform one read-only SMN transaction through ryzen_smu's locked interface."""
+    try:
+        # The module treats precisely one little-endian uint32 as an SMN *read*
+        # address. Two words would be an SMN write; never use that form here.
+        with open(SMN_PATH, "wb") as stream:
+            stream.write(struct.pack("<I", address))
+        with open(SMN_PATH, "rb") as stream:
+            raw = stream.read(4)
+        if len(raw) != 4:
+            return None
+        return struct.unpack("<I", raw)[0]
+    except OSError:
+        return None
+
+
+def read_profile_ccd_temperature(profile, ccd):
+    """Read an exact, profile-approved CCD sensor; return None if unavailable."""
+    if profile is None or not 0 <= ccd < len(profile.ccd_smn_temp_addresses):
+        return None
+    raw = read_smn_u32(profile.ccd_smn_temp_addresses[ccd])
+    return decode_ccd_smn_temperature(raw) if raw is not None else None
+
+
+def read_profile_tctl_temperature(profile):
+    """Read the exact, profile-approved Tctl/Tdie sensor or return None."""
+    if profile is None or profile.tctl_smn_address is None:
+        return None
+    raw = read_smn_u32(profile.tctl_smn_address)
+    return decode_zen_tctl_smn_temperature(raw) if raw is not None else None
 
 
 # ================= THREAD : REAL-TIME KERNEL LOGS =================
@@ -495,9 +526,15 @@ class GNRMaster(QMainWindow):
 
     def _build_sensor_tree(self):
         temperatures = self._add_sensor_group(None, "Temperatures")
-        self._add_sensor(temperatures, "tctl", "CPU (Tctl/Tdie)", "°C")
+        self._add_sensor(
+            temperatures, "tctl", "CPU (Tctl/Tdie)", "°C",
+            "Direct Tctl/Tdie sensor via the profile-approved SMN register.",
+        )
         for ccd in range(max(1, (self.core_count + 7) // 8)):
-            self._add_sensor(temperatures, f"tccd{ccd}", f"CPU CCD{ccd + 1} (k10temp)", "°C")
+            self._add_sensor(
+                temperatures, f"tccd{ccd}", f"CPU CCD{ccd + 1}", "°C",
+                "Direct CCD sensor via the profile-approved SMN register.",
+            )
         core_temps = self._add_sensor_group(temperatures, "Core Temperatures")
         for core in range(self.core_count):
             self._add_sensor(core_temps, f"core_temp_{core}",
@@ -931,8 +968,9 @@ class GNRMaster(QMainWindow):
 
     def _update_sensor_tree(self, d):
         vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
-        self._set_sensor("tctl", d[11])
-        self._set_summary("cpu", f"{d[11]:.1f} °C")
+        tctl = read_profile_tctl_temperature(self.profile)
+        self._set_sensor("tctl", tctl)
+        self._set_summary("cpu", f"{tctl:.1f} °C" if tctl is not None else "--")
         self._set_sensor("ppt", d[3])
         self._set_sensor("ppt_limit", d[2])
         self._set_sensor("tdc", d[9])
@@ -975,7 +1013,7 @@ class GNRMaster(QMainWindow):
 
         ccd_count = max(1, (self.core_count + 7) // 8)
         for ccd in range(ccd_count):
-            ccd_temp = read_hwmon_temperature(f"Tccd{ccd + 1}")
+            ccd_temp = read_profile_ccd_temperature(self.profile, ccd)
             self._set_sensor(f"tccd{ccd}", ccd_temp)
             self._set_summary(
                 f"ccd{ccd}", f"{ccd_temp:.1f} °C" if ccd_temp is not None else "--"

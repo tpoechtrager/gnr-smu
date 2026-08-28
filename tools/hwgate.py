@@ -56,6 +56,13 @@ class HardwareProfile:
     co_mode: str
     co_msg: int = 0
     allow_smu_writes: bool = False
+    # Direct Tctl/Tdie register. Like the CCD registers below, this is separate
+    # from the PM table and is never inferred for an unknown profile.
+    tctl_smn_address: Optional[int] = None
+    # Direct CCD temperature registers. These are read-only SMN locations, separate
+    # from the PM table. They are explicit per-profile so an unknown CPU never gets
+    # a guessed raw-SMN address.
+    ccd_smn_temp_addresses: tuple = ()
     ccd_shared_temperature: Optional[int] = None
     edc_value: Optional[int] = None
 
@@ -77,6 +84,9 @@ PROFILES = {
         stock_ppt=162, stock_tdc=120, stock_edc=180,
         co_mode="legacy_per_message",
         allow_smu_writes=True,
+        tctl_smn_address=0x59800,
+        # Linux k10temp maps Zen 5 Ryzen Desktop Tccd1 to 0x59800 + 0x308.
+        ccd_smn_temp_addresses=(0x59B08,),
     ),
     (0x620205, 2452, 16): HardwareProfile(
         "AMD Ryzen 9 9950X3D", "AMD Ryzen 9 9950X3D", 0x620205, 2452, 16,
@@ -124,6 +134,9 @@ PROFILES = {
         stock_ppt=200, stock_tdc=160, stock_edc=225,
         co_mode="packed_core_mask", co_msg=0x35,
         allow_smu_writes=True,
+        tctl_smn_address=0x59800,
+        # Same Zen 5 Desktop register block: Tccd1, Tccd2.
+        ccd_smn_temp_addresses=(0x59B08, 0x59B0C),
         # d[64] sits right after EDC_LIMIT (d[63]) and behaves like the
         # missing EDC_VALUE: idle ~7 A, rises to ~128 A under all-core load,
         # and stays above the same run's TDC current (d[9], ~108 A) as a
