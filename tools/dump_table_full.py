@@ -27,7 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import get_hardware_profile, map_labels_supported  # noqa: E402
-from smn_telemetry import read_profile_active_core_slots  # noqa: E402
+from smn_telemetry import read_profile_factory_enabled_core_slots  # noqa: E402
 
 PM = "/sys/kernel/ryzen_smu_drv/pm_table"
 MAP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -80,9 +80,9 @@ def main():
     if not map_labels_supported():
         print(f"# no full labelled map for this profile: {why}")
         if profile:
-            slots = read_profile_active_core_slots(profile)
+            slots = read_profile_factory_enabled_core_slots(profile)
             if slots is None and profile.requires_topology_mask:
-                print("# per-core lanes not listed: the active-slot mask is unavailable")
+                print("# per-core lanes not listed: factory topology maps are unavailable")
             else:
                 slots = slots or tuple(range(profile.slot_count or profile.cores))
                 indices = ", ".join(str(profile.core_temp + slot) for slot in slots)

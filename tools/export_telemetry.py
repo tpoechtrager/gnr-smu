@@ -17,7 +17,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import get_hardware_profile  # noqa: E402
-from smn_telemetry import (read_profile_active_core_slots, read_profile_iod_lanes,
+from smn_telemetry import (read_profile_factory_enabled_core_slots, read_profile_iod_lanes,
                            read_profile_prochot_status)  # noqa: E402
 
 PM_TABLE_PATH = "/sys/kernel/ryzen_smu_drv/pm_table"
@@ -81,26 +81,26 @@ def global_fields(profile):
     return fields
 
 
-def active_slots(profile):
-    """Return PM positions that belong to usable physical cores.
+def factory_enabled_slots(profile):
+    """Return PM positions not disabled by the factory topology maps.
 
     Generic profiles have known binary layout but not a SKU-specific topology.
-    They must read the hardware bitmap so disabled lanes cannot leak into the
-    output as fake core sensors.  Exact profiles retain their established
-    dense fallback when direct topology access is unavailable.
+    They must read the factory topology maps so factory-disabled lanes cannot
+    leak into the output as fake core sensors. Exact profiles retain their
+    established dense fallback when direct topology access is unavailable.
     """
-    slots = read_profile_active_core_slots(profile)
+    slots = read_profile_factory_enabled_core_slots(profile)
     if slots is not None:
         return slots
     if profile.requires_topology_mask:
-        sys.exit("cannot read Granite Ridge active-slot mask; run with sudo so "
-                 "disabled PM slots are never exported as cores")
+        sys.exit("cannot read Granite Ridge factory topology maps; run with sudo so "
+                 "factory-disabled PM slots are never exported as cores")
     return tuple(range(profile.slot_count or profile.cores))
 
 
 def named_fields(profile, slots=None):
     fields = global_fields(profile)
-    slots = active_slots(profile) if slots is None else slots
+    slots = factory_enabled_slots(profile) if slots is None else slots
     if profile.ccd_l3_temperature is not None:
         for ccd in range(profile.ccd_count):
             fields.append(
@@ -176,7 +176,7 @@ def get_floats(profile):
 
 def floats_to_row(d, ts, profile, fields=None, slots=None):
     row = {}
-    slots = active_slots(profile) if slots is None else slots
+    slots = factory_enabled_slots(profile) if slots is None else slots
     fields = fields or named_fields(profile, slots)
     vcores = [d[profile.core_voltage + slot] for slot in slots]
     thermal = read_profile_prochot_status(profile)
@@ -244,7 +244,7 @@ def cmd_json():
 
 def cmd_csv(live_interval=None):
     profile = require_supported_hardware()
-    slots = active_slots(profile)
+    slots = factory_enabled_slots(profile)
     fields = named_fields(profile, slots)
     fieldnames = [name for name, _, _ in fields]
     mode, write_header = csv_output_mode(fieldnames, live_interval)
@@ -278,7 +278,7 @@ def cmd_temps():
     profile = require_supported_hardware()
     d = get_floats(profile)
     print(f"Per-core temperatures — {profile.name}")
-    for slot in active_slots(profile):
+    for slot in factory_enabled_slots(profile):
         print(f"Core slot {slot:2}: {d[profile.core_temp + slot]:5.1f} °C")
 
 

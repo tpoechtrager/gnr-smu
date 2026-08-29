@@ -106,6 +106,47 @@ by `ryzen_smu`. The CO range ends at 0x57 (C7). Nothing useful lives above it on
 BIOS activation (`Advanced > AMD CBS > NBIO > SMU Common Options > HSMP Support`), which is
 `Auto (Disabled)` on consumer AM5 boards. The `amd_hsmp` driver is EPYC/server only.
 
+### 4d. Factory CCD topology
+
+Factory-level CCD topology is read from the Family 1Ah state words,
+independently of the PM-table payload and the per-core slot bitmap. Read `SMN 0x5D3BC`
+(`ccdsPresent`) and `SMN 0x5D3C0` (`ccdsDown`), then derive:
+
+```text
+ccdEnableMap = (ccdsPresent >> 22) & 0x3
+ccdDisableMap = ((ccdsPresent >> 30) & 0x3) | ((ccdsDown & 0x3F) << 2)
+```
+
+CCD `i` is factory-enabled only if its enable bit is set and its disable bit is
+clear. The implementation names this result `factory_enabled_ccds` because the
+current evidence does not prove that these words change for a BIOS-disabled
+CCD. This is also the same CCD-level state-word approach used by ZenStates-Core;
+it does not establish a runtime-online mask. A separately verified runtime
+status bit is still required to distinguish a BIOS configuration from the
+physical/fuse topology. The per-core slot mask remains a separate read and
+must not be used as a substitute for runtime CCD presence.
+
+### 4e. Core-disable maps
+
+For every factory-enabled CCD, the per-core SMN register is selected from the same base
+with the CCD ordinal shifted by 25 bits. Only its low byte is the defined
+eight-position map:
+
+```text
+factory_disabled = SMN32(0x304A03DC + (ccd << 25)) & 0xff
+factory_enabled  = (~factory_disabled) & 0xff
+```
+
+`tools/smn_telemetry.py` now keeps this as an explicit per-CCD
+`factory_disabled` map and derives the physical PM slots from the inverted
+byte. This matches the
+`coreDisableMap` handling in ZenStates-Core: factory-disabled positions are
+represented by set bits, factory-enabled positions by the inverted mask, and
+no dense `0..N-1` assumption is made. The map is applied only after factory
+CCD topology has been resolved, so a CCD excluded by the factory map cannot
+contribute stale core telemetry. Neither map is a verified indication of a
+CCD or core disabled through the BIOS.
+
 ---
 
 ## 5. ⚠ Documented Traps

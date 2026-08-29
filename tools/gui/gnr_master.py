@@ -28,7 +28,9 @@ from hwgate import (curve_optimizer_command, get_hardware_profile,
                     detected_cpu_model, hardware_supported, msg_id_blocked,
                     smu_message_supported,
                     smu_writes_supported, unvalidated_smu_control_profile)  # noqa: E402
-from smn_telemetry import (read_profile_active_core_slots, read_profile_iod_lanes,
+from smn_telemetry import (read_profile_factory_enabled_ccds,
+                           read_profile_factory_enabled_core_slots,
+                           read_profile_iod_lanes,
                            read_profile_prochot_status)  # noqa: E402
 
 # --- Color Theme ---
@@ -223,7 +225,7 @@ class CoreControlDialog(QDialog):
 class SettingsDialog(QDialog):
     """Persistent display and sampling preferences."""
 
-    def __init__(self, refresh_ms, show_disabled_cores, parent=None):
+    def __init__(self, refresh_ms, show_factory_disabled_topology, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setStyleSheet(
@@ -244,7 +246,7 @@ class SettingsDialog(QDialog):
             "font-weight: 700; }"
             f"QPushButton#settingsApply:hover {{ background: #ffb34d; border-color: #ffb34d; }}"
         )
-        self.setFixedSize(440, 330)
+        self.setFixedSize(470, 362)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
@@ -303,22 +305,25 @@ class SettingsDialog(QDialog):
         )
         display_layout.addWidget(display_heading)
 
-        self.show_disabled_cores = QCheckBox("Show inactive Cores and CCDs")
-        self.show_disabled_cores.setObjectName("showInactiveSlots")
-        self.show_disabled_cores.setChecked(show_disabled_cores)
-        self.show_disabled_cores.setToolTip(
-            "Show Cores and CCDs that are unavailable on this CPU, including "
-            "lower-core-count variants and Cores or CCDs disabled in BIOS. "
-            "Values can be stale or zero."
+        self.show_factory_disabled_topology = QCheckBox(
+            "Show factory-disabled Cores and CCDs"
+        )
+        self.show_factory_disabled_topology.setObjectName("showFactoryDisabledTopology")
+        self.show_factory_disabled_topology.setChecked(show_factory_disabled_topology)
+        self.show_factory_disabled_topology.setToolTip(
+            "Show raw PM rows excluded by the factory topology maps, such as "
+            "harvested positions on lower-core-count CPUs."
         )
 
         hint = QLabel(
-            "Includes Cores absent on lower-core-count CPUs (for example, 6-core "
-            "models) and Cores or CCDs disabled in BIOS. Raw values may be retained or zero."
+            "Lower-core-count CPUs can use partially disabled 8-core CPUs or even "
+            "disabled CCDs. Raw PM values for factory-disabled positions may be retained "
+            "or zero. BIOS-disabled hardware, including "
+            "CCDs, Cores, and the iGPU, is always shown."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"background: transparent; color: {TEXT_MUTED}; font-size: 10px;")
-        display_layout.addWidget(self.show_disabled_cores)
+        display_layout.addWidget(self.show_factory_disabled_topology)
         display_layout.addWidget(hint)
         layout.addWidget(display)
 
@@ -376,28 +381,37 @@ class GNRMaster(QMainWindow):
         self.cpu_name = detected_cpu_model()
         self.profile, self.profile_reason = get_hardware_profile()
         self.config = self._load_config()
-        self.show_disabled_cores = bool(self.config.get("show_disabled_cores", False))
+        self.show_factory_disabled_topology = bool(
+            self.config.get("show_factory_disabled_topology", False)
+        )
         # Never persisted: unvalidated control requires a fresh, explicit
         # acknowledgement every time the application starts.
         self._unvalidated_smu_override = False
-        slots = read_profile_active_core_slots(self.profile)
-        if slots is None and self.profile and self.profile.requires_topology_mask:
+        factory_enabled_slots = read_profile_factory_enabled_core_slots(self.profile)
+        if (factory_enabled_slots is None and self.profile
+                and self.profile.requires_topology_mask):
             self.profile = None
             self.profile_reason = ("generic Granite Ridge read support requires root "
-                                   "to read the active-slot SMN mask")
-            slots = ()
+                                   "to read the factory topology SMN maps")
+            factory_enabled_slots = ()
         if self.profile is None:
-            self.core_slots = ()
-        elif slots is None:
+            self.factory_enabled_core_slots = ()
+        elif factory_enabled_slots is None:
             # Exact profiles have an established dense topology fallback.
-            self.core_slots = tuple(range(self.profile.slot_count or self.profile.cores))
+            self.factory_enabled_core_slots = tuple(
+                range(self.profile.slot_count or self.profile.cores)
+            )
         else:
-            self.core_slots = slots
-        self.core_count = len(self.core_slots)
+            self.factory_enabled_core_slots = factory_enabled_slots
+        self.core_count = len(self.factory_enabled_core_slots)
         # A PM format describes the maximum geometric CCD width.  The UI must
-        # use only CCDs with at least one active physical PM slot; otherwise a
-        # disabled CCD would still appear as a permanent ``--`` row.
-        self.active_ccds = tuple(sorted({slot // 8 for slot in self.core_slots}))
+        # use only factory-enabled CCDs with at least one factory-enabled PM
+        # slot. These fields do not identify a CCD disabled through the BIOS.
+        detected_ccds = read_profile_factory_enabled_ccds(self.profile)
+        self.factory_enabled_ccds = (
+            detected_ccds if detected_ccds is not None else
+            tuple(sorted({slot // 8 for slot in self.factory_enabled_core_slots}))
+        )
         self._refresh_display_topology()
         cpu_name = self.profile.name if self.profile else "Unsupported CPU"
         self.setWindowTitle(f"GNR Master - {cpu_name} Telemetry")
@@ -973,8 +987,18 @@ class GNRMaster(QMainWindow):
             # ``co_offsets`` used to be a local write cache. There is no
             # validated readback path, so keeping it would misrepresent stale
             # data as the current hardware configuration.
+            config_changed = False
             if "co_offsets" in data:
                 data.pop("co_offsets")
+                config_changed = True
+            # The old name predated the distinction between factory topology
+            # and BIOS runtime state. Retain its value once, under the precise
+            # key, so existing preferences migrate without changing behavior.
+            if "show_factory_disabled_topology" not in data and "show_disabled_cores" in data:
+                data["show_factory_disabled_topology"] = data["show_disabled_cores"]
+                data.pop("show_disabled_cores")
+                config_changed = True
+            if config_changed:
                 with open(CONFIG_PATH, "w") as f:
                     json.dump(data, f, indent=2, sort_keys=True)
             return data
@@ -989,23 +1013,32 @@ class GNRMaster(QMainWindow):
             return 500
 
     def _refresh_display_topology(self):
-        """Select UI rows without ever treating an inactive slot as telemetry."""
-        self._active_slot_set = frozenset(self.core_slots)
+        """Select rows from factory topology without implying BIOS state."""
+        self._factory_enabled_slot_set = frozenset(self.factory_enabled_core_slots)
         if self.profile is None:
             physical_slots = ()
         else:
             physical_slots = tuple(range(self.profile.slot_count or self.profile.cores))
-        self.visible_core_slots = (physical_slots if self.show_disabled_cores
-                                   else self.core_slots)
-        self.visible_ccds = tuple(sorted({slot // 8 for slot in self.visible_core_slots}))
+        self.visible_core_slots = (
+            physical_slots if self.show_factory_disabled_topology
+            else self.factory_enabled_core_slots
+        )
+        if self.profile is None:
+            self.visible_ccds = ()
+        elif self.show_factory_disabled_topology:
+            self.visible_ccds = tuple(range(self.profile.ccd_count))
+        else:
+            self.visible_ccds = self.factory_enabled_ccds
 
     def _core_label(self, slot):
         label = f"Core {slot} (CCD{slot // 8 + 1}"
-        return label + (")" if slot in self._active_slot_set else ", disabled)")
+        return label + (")" if slot in self._factory_enabled_slot_set
+                        else ", factory-disabled)")
 
     def _ccd_label(self, ccd, prefix="", suffix=""):
         label = f"{prefix}CCD{ccd + 1}{suffix}"
-        return label if ccd in self.active_ccds else f"{label} (disabled)"
+        return (label if ccd in self.factory_enabled_ccds
+                else f"{label} (factory-disabled)")
 
     def _fit_window_size(self, width, height):
         width = max(self.minimumWidth(), int(width))
@@ -1073,20 +1106,24 @@ class GNRMaster(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(
-            self.sensor_update_ms, self.show_disabled_cores, self
+            self.sensor_update_ms, self.show_factory_disabled_topology, self
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         refresh_ms = self._sanitize_update_interval(dialog.refresh_input.value())
-        show_disabled_cores = dialog.show_disabled_cores.isChecked()
-        topology_changed = show_disabled_cores != self.show_disabled_cores
-        self.show_disabled_cores = show_disabled_cores
+        show_factory_disabled_topology = (
+            dialog.show_factory_disabled_topology.isChecked()
+        )
+        topology_changed = (
+            show_factory_disabled_topology != self.show_factory_disabled_topology
+        )
+        self.show_factory_disabled_topology = show_factory_disabled_topology
         self._refresh_display_topology()
         self._set_update_interval(refresh_ms)
         self._save_config({
             "sensor_update_ms": self.sensor_update_ms,
-            "show_disabled_cores": self.show_disabled_cores,
+            "show_factory_disabled_topology": self.show_factory_disabled_topology,
         })
         if topology_changed:
             self._rebuild_overview_page()
@@ -1254,7 +1291,7 @@ class GNRMaster(QMainWindow):
     def open_core_control(self):
         if not self._smu_controls_available():
             return
-        dlg = CoreControlDialog(self.current_co, self.core_slots, self)
+        dlg = CoreControlDialog(self.current_co, self.factory_enabled_core_slots, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             changed = [(core, spin.value()) for core, spin in dlg.spins.items()
                        if spin.value() != self.current_co[core]]
@@ -1348,7 +1385,8 @@ class GNRMaster(QMainWindow):
         if not self._temperature_sample_is_valid(d, tctl, ccd_temperatures):
             return False
 
-        vcores = [d[self.profile.core_voltage + slot] for slot in self.core_slots]
+        vcores = [d[self.profile.core_voltage + slot]
+                  for slot in self.factory_enabled_core_slots]
         self._set_sensor("tctl", tctl)
         self._set_summary("cpu", f"{tctl:.1f} °C" if tctl is not None else "--")
         self._set_sensor("ppt", d[3])
@@ -1387,7 +1425,7 @@ class GNRMaster(QMainWindow):
             )
         self._set_sensor("cpu_power", d[20])
         self._set_sensor("core_power", sum(d[self.profile.core_power + slot]
-                                            for slot in self.core_slots))
+                                            for slot in self.factory_enabled_core_slots))
         self._set_sensor("soc_power", d[21])
         self._set_sensor("vddio_power", d[22])
         self._set_sensor("vdd18_power", d[23])
@@ -1432,7 +1470,7 @@ class GNRMaster(QMainWindow):
         frequencies = []
         for core in self.visible_core_slots:
             freq = self._core_frequency_mhz(d, core)
-            if core in self._active_slot_set and freq is not None:
+            if core in self._factory_enabled_slot_set and freq is not None:
                 frequencies.append(freq)
             self._set_sensor(f"core_temp_{core}", d[self.profile.core_temp + core])
             self._set_sensor(f"core_clock_{core}", freq)

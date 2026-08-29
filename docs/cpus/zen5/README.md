@@ -90,6 +90,46 @@ retains PM-table telemetry and hides Tctl/Tdie, CCD, IOD, and thermal-status
 sensors. The named CSV exporter marks unavailable SMN values accordingly; the
 default JSON mode contains raw PM-table snapshots only.
 
+## Factory CCD and core topology
+
+Granite Ridge exposes eight geometric PM positions per CCD. The read-only
+factory core-disable bitmap for CCD `n` is read at:
+
+```text
+0x304A03DC + (n << 25)
+```
+
+Therefore CCD0 uses `0x304A03DC` (slots 0–7) and CCD1 uses `0x324A03DC`
+(slots 8–15). In the defined low byte, bit `i = 1` means that physical
+position `i` is factory-disabled; bit `i = 0` means it is not disabled by this
+map. Only this low byte is defined. The PM slot numbers remain geometric and
+must not be compacted into a dense `0..N-1` range.
+
+The package-level factory CCD words are `0x5D3BC` (`ccdsPresent`) and
+`0x5D3C0` (`ccdsDown`). For the currently observed Family 1Ah layout:
+
+```text
+ccdEnableMap  = (read(0x5D3BC) >> 22) & 0x3
+ccdDisableMap = ((read(0x5D3BC) >> 30) & 0x3)
+                | ((read(0x5D3C0) & 0x3F) << 2)
+```
+
+A CCD is factory-enabled only when its enable bit is set and its disable bit is
+clear. These words can be queried to inspect fuse-level CCD/core topology, but
+we currently cannot prove that they change when a user disables a CCD or core
+in the BIOS. On the tested system they remained unchanged across such a
+configuration change, so they are not a complete runtime-online mask.
+
+The PM-table geometry, advertised core count, and factory topology must be
+treated independently. For example, an eight-core product could have one
+eight-position CCD or two CCDs with four factory-enabled positions each; a
+six-core product can retain one CCD's eight-position geometry with two
+factory-disabled positions. These are possible package layouts, not rules to
+infer from a product name. Use the per-CCD factory maps to establish the
+factory layout. They do not describe the BIOS runtime state: a separately
+verified runtime status bit is required to identify a CCD or core disabled in
+the BIOS.
+
 ## Dashboard groups and derived values
 
 The dashboard groups PPT, TDC, and EDC under **CPU Limits → Package Power &
