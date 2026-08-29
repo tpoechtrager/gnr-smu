@@ -27,7 +27,7 @@ repo contains the measured layouts and tools that select the correct profile.
   9800X3D. This fork adds a full second hardware profile for the 9950X3D — PM table
   `0x620205`, all 16 per-core temperatures, and a model-specific SMU command
   allowlist; see [`docs/cpus/zen5/9950X3D.md`](docs/cpus/zen5/9950X3D.md).
-- **Unified HWiNFO-style dashboard.** The GUI ([`tools/gui/gnr_master.py`](tools/gui/gnr_master.py))
+- **Unified telemetry dashboard.** The GUI ([`tools/gui/gnr_master.py`](tools/gui/gnr_master.py))
   is a single sensor tree with current/min/max/average columns, replacing the older
   page-per-category layout. A live status bar shows CPU/CCD temperatures, peak core
   frequency, and PPT/TDC/EDC in one line.
@@ -47,9 +47,10 @@ repo contains the measured layouts and tools that select the correct profile.
   - `d[611]`/`d[612]` and the candidate CCD power/VDDM fields (`d[589]-d[592]`) were
     found to be **not** CCD-selective under the same test and have been removed from
     the GUI rather than kept mislabelled.
-- **GUI usability fixes:** larger/consistently-styled refresh-rate and reset-min/max
-  controls, a "Dashboard" page that matches its sidebar entry, and a frequency summary
-  that reports the highest core clock instead of an average across all cores.
+- **GUI usability fixes:** a Settings dialog for refresh rate and optional disabled-core
+  rows, reset-min/max controls, a "Dashboard" page that matches its sidebar entry, and
+  a frequency summary that reports the highest core clock instead of an average across
+  all cores.
 
 ## Wanted: a dump from any other Granite Ridge part
 
@@ -168,7 +169,7 @@ direct-SMN sensors (Tctl/Tdie, CCD, IOD and PROCHOT/HTC), while PM-table telemet
 remains available.
 
 ```bash
-sudo python3 tools/gui/gnr_master.py      # HWiNFO-style table: current/min/max/avg, cores, rails, L3
+sudo python3 tools/gui/gnr_master.py      # telemetry table: current/min/max/avg, cores, rails, L3
 sudo python3 tools/gnr_master.py          # menu-driven CLI for limits and Curve Optimizer
 sudo python3 tools/export_telemetry.py    # 5 JSON snapshots
 sudo python3 tools/export_telemetry.py --csv
@@ -185,7 +186,7 @@ the 9800X3D mapping by writing a value and reading back which limit moved, and t
 `0x50`-`0x57` per core on the 9800X3D and `0x35` with CCD/core selection encoded in
 the argument on the 9950X3D. It is write-only, so the tools cache applied offsets in
 `$XDG_CONFIG_HOME/gnr_master.json`. The GUI also stores its sensor-table column order,
-column widths, refresh interval and window size there.
+column widths, refresh interval, disabled-core display preference, and window size there.
 
 `research/` holds the measurement scripts, one per question asked: `audit_map.py`
 (the map's regression gate), `recheck_zone0.py` / `recheck_sweep.py` / `recheck_edc.py`

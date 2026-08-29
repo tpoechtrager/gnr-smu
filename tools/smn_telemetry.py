@@ -5,10 +5,17 @@ import struct
 
 
 SMN_PATH = "/sys/kernel/ryzen_smu_drv/smn"
+GNR_DISABLED_SLOTS_BASE_LOW = 0x304A03DC
+GNR_DISABLED_SLOTS_BASE_HIGH = 0x3A4A03DC
 
 
 def read_smn_u32(address):
-    """Read one 32-bit SMN register through ryzen_smu."""
+    """Read one 32-bit SMN register through ``ryzen_smu``.
+
+    The kernel interface treats exactly one little-endian word as the address
+    of a read transaction.  A register value is never sent by this helper.
+    ``None`` means the driver or the requested read was unavailable.
+    """
     try:
         # One little-endian word is a read request; no write payload is sent.
         with open(SMN_PATH, "wb") as stream:
@@ -18,6 +25,55 @@ def read_smn_u32(address):
         return struct.unpack("<I", data)[0] if len(data) == 4 else None
     except OSError:
         return None
+
+
+def granite_ridge_disabled_slots_address(ccd):
+    """Return the read-only disabled-slot bitmap address for one CCD base.
+
+    ``ccd`` is the global PM-slot base (0 for CCD0, 8 for CCD1).  A CCD has
+    eight physical PM-table positions.  The register's low byte has one bit
+    per position: set means disabled, clear means usable.  This helper only
+    calculates the address; it does not access hardware.
+    """
+    if not 0 <= ccd < 512 or ccd % 8:
+        raise ValueError("CCD base must be an 8-slot boundary in range 0..504")
+    base = GNR_DISABLED_SLOTS_BASE_LOW if ccd < 8 else GNR_DISABLED_SLOTS_BASE_HIGH
+    # The driver accepts a 32-bit SMN address.  Keep speculative high-index
+    # probes in that address space; the caller deduplicates any aliases caused
+    # by the bounded arithmetic wraparound.
+    return (base + (ccd << 25)) & 0xFFFFFFFF
+
+
+def read_profile_active_core_slots(profile):
+    """Discover the usable physical PM slots for a Granite Ridge profile.
+
+    The PM table is laid out by physical position, not by the number of cores
+    sold in a SKU.  An 8-slot table therefore has positions 0..7 even on a
+    six-core CPU; a 16-slot table has positions 0..15.  This function returns
+    only positions enabled by the hardware bitmap, for example ``(0, 1, 3)``.
+
+    Returns ``None`` when the mask cannot be read.  A generic decoder must
+    treat that as unavailable topology, never as permission to substitute a
+    dense range based on the operating system's core count.
+    """
+    slot_count = getattr(profile, "slot_count", 0) if profile else 0
+    if slot_count not in (8, 16):
+        return None
+    active = []
+    # The topology register uses the global PM-slot index.  CCD0 covers
+    # slots 0..7 and CCD1 covers slots 8..15; using the ordinal (0, 1) for
+    # the second read addresses the wrong SMN region and can make disabled
+    # slots look active.
+    for ccd_base in range(0, slot_count, 8):
+        raw = read_smn_u32(granite_ridge_disabled_slots_address(ccd_base))
+        if raw is None:
+            return None
+        mask = (~raw) & 0xFF
+        active.extend(ccd_base + slot for slot in range(8)
+                      if mask & (1 << slot))
+    # An all-disabled mask cannot describe a usable profile and would make
+    # later averages undefined.  Report it as unusable topology instead.
+    return tuple(active) if active else None
 
 
 def read_profile_prochot_status(profile):

@@ -21,13 +21,15 @@ SMU_CMD_PATH = "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
 TEMPERATURE_SAMPLE_MIN_C = -300.0
 TEMPERATURE_SAMPLE_MAX_C = 1000.0
 
-# Only exact, measured PM-table profiles are accepted; tools/hwgate.py owns the
-# offsets and refuses unknown CPU/table combinations.
+# ``hwgate`` owns PM offsets and the exact write gate. Unlisted models may
+# expose a format-matched candidate layout only after a per-session warning.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hwgate import (curve_optimizer_command, get_hardware_profile,
-                    hardware_supported, msg_id_blocked, smu_message_supported,
-                    smu_writes_supported)  # noqa: E402
-from smn_telemetry import read_profile_iod_lanes, read_profile_prochot_status  # noqa: E402
+                    detected_cpu_model, hardware_supported, msg_id_blocked,
+                    smu_message_supported,
+                    smu_writes_supported, unvalidated_smu_control_profile)  # noqa: E402
+from smn_telemetry import (read_profile_active_core_slots, read_profile_iod_lanes,
+                           read_profile_prochot_status)  # noqa: E402
 
 # --- Color Theme ---
 BG_MAIN = "#101722"
@@ -184,29 +186,29 @@ class PowerControlDialog(QDialog):
 
 
 class CoreControlDialog(QDialog):
-    def __init__(self, current_co_offsets, parent=None):
+    def __init__(self, current_co_offsets, core_slots, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Curve Optimizer (CO)")
         self.setStyleSheet(
             f"background-color: {BG_MAIN}; color: {TEXT_MAIN}; font-family: 'Segoe UI';"
         )
-        height = 400 if len(current_co_offsets) <= 8 else 560
+        height = 400 if len(core_slots) <= 8 else 560
         self.setFixedSize(350, height)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Set Curve Optimizer Offsets per Core:"))
-        self.spins = []
+        self.spins = {}
         grid = QGridLayout()
-        for i in range(len(current_co_offsets)):
-            lbl = QLabel(f"Core {i}:")
+        for row, core in enumerate(core_slots):
+            lbl = QLabel(f"Core {core}:")
             spin = QSpinBox()
             spin.setRange(-50, 20)
             spin.setStyleSheet(
                 f"background-color: {BG_PANEL}; border: 1px solid {BORDER}; padding: 3px;"
             )
-            spin.setValue(current_co_offsets[i])
-            self.spins.append(spin)
-            grid.addWidget(lbl, i // 2, (i % 2) * 2)
-            grid.addWidget(spin, i // 2, (i % 2) * 2 + 1)
+            spin.setValue(current_co_offsets[core])
+            self.spins[core] = spin
+            grid.addWidget(lbl, row // 2, (row % 2) * 2)
+            grid.addWidget(spin, row // 2, (row % 2) * 2 + 1)
 
         layout.addLayout(grid)
         btn_apply = QPushButton("Apply Curve Optimizer")
@@ -216,6 +218,122 @@ class CoreControlDialog(QDialog):
         btn_apply.clicked.connect(self.accept)
         layout.addStretch()
         layout.addWidget(btn_apply)
+
+
+class SettingsDialog(QDialog):
+    """Persistent display and sampling preferences."""
+
+    def __init__(self, refresh_ms, show_disabled_cores, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setStyleSheet(
+            f"QDialog {{ background-color: {BG_MAIN}; color: {TEXT_MAIN}; "
+            "font-family: 'Segoe UI'; }"
+            f"QLabel {{ background: transparent; color: {TEXT_MAIN}; }}"
+            f"QFrame#settingsSection {{ background: {BG_PANEL}; border: 1px solid {BORDER}; "
+            "border-radius: 7px; }"
+            f"QSpinBox {{ background: {BG_INNER}; border: 1px solid {BORDER}; "
+            f"color: {TEXT_MAIN}; border-radius: 5px; padding: 5px 8px; }}"
+            f"QSpinBox:focus {{ border-color: {ACCENT_CYAN}; }}"
+            f"QCheckBox {{ background: transparent; color: {TEXT_MAIN}; font-size: 12px; font-weight: 650; }}"
+            f"QPushButton#settingsCancel {{ background: transparent; border: 1px solid {BORDER}; "
+            f"border-radius: 5px; color: {TEXT_MAIN}; padding: 7px 15px; min-width: 84px; }}"
+            f"QPushButton#settingsCancel:hover {{ border-color: {ACCENT_CYAN}; }}"
+            f"QPushButton#settingsApply {{ background: {ACCENT_ORANGE}; border: 1px solid {ACCENT_ORANGE}; "
+            "border-radius: 5px; color: #101722; padding: 7px 15px; min-width: 104px; "
+            "font-weight: 700; }"
+            f"QPushButton#settingsApply:hover {{ background: #ffb34d; border-color: #ffb34d; }}"
+        )
+        self.setFixedSize(440, 330)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Monitoring settings")
+        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #f8fafc;")
+        layout.addWidget(title)
+        subtitle = QLabel("Sampling interval and optional diagnostic rows")
+        subtitle.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(subtitle)
+
+        sampling = QFrame()
+        sampling.setObjectName("settingsSection")
+        sampling_layout = QVBoxLayout(sampling)
+        sampling_layout.setContentsMargins(13, 10, 13, 10)
+        sampling_layout.setSpacing(7)
+
+        telemetry_heading = QLabel("SAMPLING")
+        telemetry_heading.setStyleSheet(
+            f"background: transparent; color: {ACCENT_CYAN}; font-size: 10px; "
+            "font-weight: 800; letter-spacing: 1px;"
+        )
+        sampling_layout.addWidget(telemetry_heading)
+        refresh_row = QHBoxLayout()
+        refresh_row.setSpacing(12)
+        refresh_text = QVBoxLayout()
+        refresh_text.setSpacing(1)
+        refresh_label = QLabel("Refresh rate")
+        refresh_label.setStyleSheet("background: transparent; font-size: 12px; font-weight: 650;")
+        refresh_hint = QLabel("How often the dashboard updates")
+        refresh_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+        refresh_text.addWidget(refresh_label)
+        refresh_text.addWidget(refresh_hint)
+        refresh_row.addLayout(refresh_text, 1)
+        self.refresh_input = QSpinBox()
+        self.refresh_input.setRange(100, 10000)
+        self.refresh_input.setSingleStep(100)
+        self.refresh_input.setSuffix(" ms")
+        self.refresh_input.setValue(refresh_ms)
+        self.refresh_input.setToolTip("Telemetry refresh interval.")
+        self.refresh_input.setMinimumWidth(124)
+        refresh_row.addWidget(self.refresh_input)
+        sampling_layout.addLayout(refresh_row)
+        layout.addWidget(sampling)
+
+        display = QFrame()
+        display.setObjectName("settingsSection")
+        display_layout = QVBoxLayout(display)
+        display_layout.setContentsMargins(13, 10, 13, 10)
+        display_layout.setSpacing(5)
+
+        display_heading = QLabel("DISPLAY")
+        display_heading.setStyleSheet(
+            f"background: transparent; color: {ACCENT_CYAN}; font-size: 10px; "
+            "font-weight: 800; letter-spacing: 1px;"
+        )
+        display_layout.addWidget(display_heading)
+
+        self.show_disabled_cores = QCheckBox("Show inactive Cores and CCDs")
+        self.show_disabled_cores.setObjectName("showInactiveSlots")
+        self.show_disabled_cores.setChecked(show_disabled_cores)
+        self.show_disabled_cores.setToolTip(
+            "Show Cores and CCDs that are unavailable on this CPU, including "
+            "lower-core-count variants and Cores or CCDs disabled in BIOS. "
+            "Values can be stale or zero."
+        )
+
+        hint = QLabel(
+            "Includes Cores absent on lower-core-count CPUs (for example, 6-core "
+            "models) and Cores or CCDs disabled in BIOS. Raw values may be retained or zero."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"background: transparent; color: {TEXT_MUTED}; font-size: 10px;")
+        display_layout.addWidget(self.show_disabled_cores)
+        display_layout.addWidget(hint)
+        layout.addWidget(display)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setObjectName("settingsCancel")
+        cancel_button.clicked.connect(self.reject)
+        apply_button = QPushButton("Save settings")
+        apply_button.setObjectName("settingsApply")
+        apply_button.clicked.connect(self.accept)
+        apply_button.setDefault(True)
+        actions.addWidget(cancel_button)
+        actions.addWidget(apply_button)
+        layout.addLayout(actions)
 
 
 # ================= UI COMPONENTS =================
@@ -255,8 +373,32 @@ class GNRMaster(QMainWindow):
     def __init__(self):
         super().__init__()
         self._smn_readable = bool(getattr(os, "geteuid", lambda: 0)() == 0)
+        self.cpu_name = detected_cpu_model()
         self.profile, self.profile_reason = get_hardware_profile()
-        self.core_count = self.profile.cores if self.profile else 8
+        self.config = self._load_config()
+        self.show_disabled_cores = bool(self.config.get("show_disabled_cores", False))
+        # Never persisted: unvalidated control requires a fresh, explicit
+        # acknowledgement every time the application starts.
+        self._unvalidated_smu_override = False
+        slots = read_profile_active_core_slots(self.profile)
+        if slots is None and self.profile and self.profile.requires_topology_mask:
+            self.profile = None
+            self.profile_reason = ("generic Granite Ridge read support requires root "
+                                   "to read the active-slot SMN mask")
+            slots = ()
+        if self.profile is None:
+            self.core_slots = ()
+        elif slots is None:
+            # Exact profiles have an established dense topology fallback.
+            self.core_slots = tuple(range(self.profile.slot_count or self.profile.cores))
+        else:
+            self.core_slots = slots
+        self.core_count = len(self.core_slots)
+        # A PM format describes the maximum geometric CCD width.  The UI must
+        # use only CCDs with at least one active physical PM slot; otherwise a
+        # disabled CCD would still appear as a permanent ``--`` row.
+        self.active_ccds = tuple(sorted({slot // 8 for slot in self.core_slots}))
+        self._refresh_display_topology()
         cpu_name = self.profile.name if self.profile else "Unsupported CPU"
         self.setWindowTitle(f"GNR Master - {cpu_name} Telemetry")
         self.setMinimumSize(980, 620)
@@ -264,7 +406,6 @@ class GNRMaster(QMainWindow):
             f"background-color: {BG_MAIN}; color: {TEXT_MAIN}; font-family: 'Segoe UI';"
         )
 
-        self.config = self._load_config()
         self.sensor_update_ms = self._sanitize_update_interval(
             self.config.get("sensor_update_ms", 500)
         )
@@ -273,7 +414,11 @@ class GNRMaster(QMainWindow):
         self._preferences_timer.timeout.connect(self._save_sensor_preferences)
         (self.current_ppt, self.current_tdc, self.current_edc,
          self.current_thermal) = self._read_pm_limits()
-        self.current_co = self.load_co_config()
+        # The SMU write interface has no verified CO readback path. Keep values
+        # only for this process so the UI never presents a local cache as live
+        # hardware configuration.
+        slot_count = self.profile.slot_count if self.profile else self.core_count
+        self.current_co = [0] * slot_count
 
         self._build_interface()
         self._restore_window_size()
@@ -339,13 +484,15 @@ class GNRMaster(QMainWindow):
         sidebar_layout.addWidget(controls)
         core_control = QPushButton("⚡  Core Control")
         power_control = QPushButton("⌁  Power / Thermal")
-        for button in (core_control, power_control):
+        settings_control = QPushButton("⚙  Settings")
+        for button in (core_control, power_control, settings_control):
             button.setMinimumHeight(42)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setStyleSheet(self._control_button_style())
             sidebar_layout.addWidget(button)
         core_control.clicked.connect(self.open_core_control)
         power_control.clicked.connect(self.open_power_control)
+        settings_control.clicked.connect(self.open_settings)
         root_layout.addWidget(sidebar)
         root_layout.addWidget(self.pages, 1)
         self._show_page(0)
@@ -381,10 +528,10 @@ class GNRMaster(QMainWindow):
         self.summary_widgets = {}
         cpu_summary = self._add_summary_metric(status_layout, "cpu", "CPU", ACCENT_ORANGE)
         ccd_summaries = []
-        for ccd in range(max(1, (self.core_count + 7) // 8)):
+        for ccd in self.visible_ccds:
             ccd_summaries.append(
                 self._add_summary_metric(
-                    status_layout, f"ccd{ccd}", f"CCD{ccd + 1}", ACCENT_CYAN
+                    status_layout, f"ccd{ccd}", self._ccd_label(ccd), ACCENT_CYAN
                 )
             )
         if not self._smn_readable:
@@ -405,24 +552,6 @@ class GNRMaster(QMainWindow):
             f"QPushButton:hover {{ border-color: {ACCENT_ORANGE}; color: {TEXT_MAIN}; }}"
         )
         self.reset_stats_button.clicked.connect(self._reset_sensor_stats)
-        refresh_label = QLabel("Refresh rate")
-        refresh_label.setStyleSheet(
-            f"background: transparent; color: {TEXT_MUTED}; font-size: 12px; font-weight: 700;"
-        )
-        self.update_rate_input = QSpinBox()
-        self.update_rate_input.setRange(100, 10000)
-        self.update_rate_input.setSingleStep(100)
-        self.update_rate_input.setSuffix(" ms")
-        self.update_rate_input.setValue(self.sensor_update_ms)
-        self.update_rate_input.setToolTip("Telemetry refresh interval. Saved in the GUI configuration.")
-        self.update_rate_input.setMinimumHeight(32)
-        self.update_rate_input.setStyleSheet(
-            f"background: {BG_INNER}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; "
-            "border-radius: 6px; padding: 6px 8px; font-size: 12px; font-weight: 600;"
-        )
-        self.update_rate_input.valueChanged.connect(self._set_update_interval)
-        status_layout.addWidget(refresh_label)
-        status_layout.addWidget(self.update_rate_input)
         status_layout.addWidget(self.reset_stats_button)
         layout.addWidget(status_bar)
 
@@ -585,29 +714,33 @@ class GNRMaster(QMainWindow):
         return item
 
     def _build_sensor_tree(self):
+        # Put the actual CPU identity in the table itself.  The decoder profile
+        # remains an internal implementation detail and is not used as the
+        # visible hardware name.
+        self._add_sensor_group(None, self.cpu_name, expanded=True)
+
         temperatures = self._add_sensor_group(None, "Temperatures")
         tctl_item = self._add_sensor(
             temperatures, "tctl", "CPU (Tctl/Tdie)", "°C",
             "Direct Tctl/Tdie sensor via the profile-approved SMN register.",
         )
         tctl_item.setHidden(not self._smn_readable)
-        for ccd in range(max(1, (self.core_count + 7) // 8)):
+        for ccd in self.visible_ccds:
             ccd_item = self._add_sensor(
-                temperatures, f"tccd{ccd}", f"CPU CCD{ccd + 1}", "°C",
+                temperatures, f"tccd{ccd}", self._ccd_label(ccd, "CPU "), "°C",
                 "Direct CCD sensor via the profile-approved SMN register.",
             )
             ccd_item.setHidden(not self._smn_readable)
         core_temps = self._add_sensor_group(temperatures, "Cores")
-        for core in range(self.core_count):
-            self._add_sensor(core_temps, f"core_temp_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "°C")
+        for core in self.visible_core_slots:
+            self._add_sensor(core_temps, f"core_temp_{core}", self._core_label(core), "°C")
 
         l3 = self._add_sensor_group(temperatures, "L3 Cache")
         l3.setToolTip(0, "Per-CCD L3 cache temperature telemetry.")
         if self.profile and self.profile.ccd_l3_temperature is not None:
-            for ccd in range(self.profile.ccd_count):
+            for ccd in self.visible_ccds:
                 self._add_sensor(l3, f"ccd_l3_temp_{ccd}",
-                                 f"CCD{ccd + 1} L3 Cache",
+                                 self._ccd_label(ccd, suffix=" L3 Cache"),
                                  "°C",
                                  "Per-CCD L3 cache temperature, validated for this profile.")
         else:
@@ -660,9 +793,8 @@ class GNRMaster(QMainWindow):
         ):
             self._add_sensor(power, key, label, "W")
         core_power = self._add_sensor_group(power, "Core Powers")
-        for core in range(self.core_count):
-            self._add_sensor(core_power, f"core_power_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "W")
+        for core in self.visible_core_slots:
+            self._add_sensor(core_power, f"core_power_{core}", self._core_label(core), "W")
 
         clocks = self._add_sensor_group(None, "Clocks")
         for key, label in (("fclk", "Infinity Fabric Clock (FCLK)"),
@@ -670,9 +802,8 @@ class GNRMaster(QMainWindow):
                            ("mclk", "Memory Clock (MCLK)")):
             self._add_sensor(clocks, key, label, "MHz")
         core_clocks = self._add_sensor_group(clocks, "Core Clocks", expanded=True)
-        for core in range(self.core_count):
-            self._add_sensor(core_clocks, f"core_clock_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "MHz",
+        for core in self.visible_core_slots:
+            self._add_sensor(core_clocks, f"core_clock_{core}", self._core_label(core), "MHz",
                              "Direct PM-table clock lane used by Ryzen Master")
 
         voltages = self._add_sensor_group(None, "Voltages")
@@ -683,59 +814,54 @@ class GNRMaster(QMainWindow):
                            ("vid_limit", "VID Limit")):
             self._add_sensor(voltages, key, label, "V")
         core_voltages = self._add_sensor_group(voltages, "Core Voltages")
-        for core in range(self.core_count):
-            self._add_sensor(core_voltages, f"core_voltage_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "V")
+        for core in self.visible_core_slots:
+            self._add_sensor(core_voltages, f"core_voltage_{core}", self._core_label(core), "V")
 
         residency_label = ("Core residency & FIT" if self.profile is None
                            or self.profile.core_fit is not None else "Core residency")
         residency = self._add_sensor_group(None, residency_label)
         ccd_summary = self._add_sensor_group(residency, "CCD residency summary")
         has_direct_c0 = self.profile is not None and self.profile.core_c0 is not None
-        for ccd in range(max(1, (self.core_count + 7) // 8)):
-            label = f"CCD{ccd + 1} C0 residency" if has_direct_c0 else f"CCD{ccd + 1} active/load estimate"
+        for ccd in self.visible_ccds:
+            label = (self._ccd_label(ccd, suffix=" C0 residency") if has_direct_c0
+                     else self._ccd_label(ccd, suffix=" active/load estimate"))
             self._add_sensor(ccd_summary, f"ccd_c0_{ccd}", label, "%",
                              "C0 is direct on the 9950X3D; 9800X3D uses 100 - CC6.",
                              ACCENT_GREEN)
             if has_direct_c0:
-                self._add_sensor(ccd_summary, f"ccd_cc1_{ccd}", f"CCD{ccd + 1} CC1 residency", "%",
+                self._add_sensor(ccd_summary, f"ccd_cc1_{ccd}",
+                                 self._ccd_label(ccd, suffix=" CC1 residency"), "%",
                                  current_color=ACCENT_CYAN)
-            self._add_sensor(ccd_summary, f"ccd_cc6_{ccd}", f"CCD{ccd + 1} CC6 residency", "%",
+            self._add_sensor(ccd_summary, f"ccd_cc6_{ccd}",
+                             self._ccd_label(ccd, suffix=" CC6 residency"), "%",
                              current_color=ACCENT_PURPLE)
 
         if self.profile is None or self.profile.core_fit is not None:
             fit_group = self._add_sensor_group(residency, "FIT / related metric")
-            for core in range(self.core_count):
-                ccd = core // 8 + 1
-                self._add_sensor(fit_group, f"core_fit_{core}",
-                                 f"Core {core} FIT-related metric (CCD{ccd})", "",
+            for core in self.visible_core_slots:
+                self._add_sensor(fit_group, f"core_fit_{core}", self._core_label(core), "",
                                  "Per-core PM-table FIT/related metric; not a direct temperature or voltage reading.",
                                  ACCENT_ORANGE)
 
         c0_group = self._add_sensor_group(
             residency, "C0 residency · active cores" if has_direct_c0 else "Active/load estimate · 100 - CC6"
         )
-        for core in range(self.core_count):
-            self._add_sensor(c0_group, f"core_c0_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "%",
+        for core in self.visible_core_slots:
+            self._add_sensor(c0_group, f"core_c0_{core}", self._core_label(core), "%",
                              current_color=ACCENT_GREEN)
 
         cc1_group = None
         if has_direct_c0:
             cc1_group = self._add_sensor_group(residency, "CC1 residency · light idle")
-            for core in range(self.core_count):
-                self._add_sensor(cc1_group, f"core_cc1_{core}",
-                                 f"Core {core} (CCD{core // 8 + 1})", "%",
+            for core in self.visible_core_slots:
+                self._add_sensor(cc1_group, f"core_cc1_{core}", self._core_label(core), "%",
                                  current_color=ACCENT_CYAN)
 
         cc6_group = self._add_sensor_group(residency, "CC6 residency · deep idle")
-        for core in range(self.core_count):
-            self._add_sensor(cc6_group, f"core_cc6_{core}",
-                             f"Core {core} (CCD{core // 8 + 1})", "%",
+        for core in self.visible_core_slots:
+            self._add_sensor(cc6_group, f"core_cc6_{core}", self._core_label(core), "%",
                              current_color=ACCENT_PURPLE)
-        co_config = self._add_sensor_group(None, "Configured Curve Optimizer")
-        for core in range(self.core_count):
-            self._add_sensor(co_config, f"co_{core}", f"Core {core} (CCD{core // 8 + 1})", "int")
+
     def _format_sensor_value(self, value, unit):
         if value is None:
             return "--"
@@ -842,7 +968,16 @@ class GNRMaster(QMainWindow):
         try:
             with open(CONFIG_PATH, "r") as f:
                 data = json.load(f)
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            # ``co_offsets`` used to be a local write cache. There is no
+            # validated readback path, so keeping it would misrepresent stale
+            # data as the current hardware configuration.
+            if "co_offsets" in data:
+                data.pop("co_offsets")
+                with open(CONFIG_PATH, "w") as f:
+                    json.dump(data, f, indent=2, sort_keys=True)
+            return data
         except Exception:
             return {}
 
@@ -852,6 +987,25 @@ class GNRMaster(QMainWindow):
             return max(100, min(10000, int(value)))
         except (TypeError, ValueError):
             return 500
+
+    def _refresh_display_topology(self):
+        """Select UI rows without ever treating an inactive slot as telemetry."""
+        self._active_slot_set = frozenset(self.core_slots)
+        if self.profile is None:
+            physical_slots = ()
+        else:
+            physical_slots = tuple(range(self.profile.slot_count or self.profile.cores))
+        self.visible_core_slots = (physical_slots if self.show_disabled_cores
+                                   else self.core_slots)
+        self.visible_ccds = tuple(sorted({slot // 8 for slot in self.visible_core_slots}))
+
+    def _core_label(self, slot):
+        label = f"Core {slot} (CCD{slot // 8 + 1}"
+        return label + (")" if slot in self._active_slot_set else ", disabled)")
+
+    def _ccd_label(self, ccd, prefix="", suffix=""):
+        label = f"{prefix}CCD{ccd + 1}{suffix}"
+        return label if ccd in self.active_ccds else f"{label} (disabled)"
 
     def _fit_window_size(self, width, height):
         width = max(self.minimumWidth(), int(width))
@@ -908,6 +1062,36 @@ class GNRMaster(QMainWindow):
             self.timer.setInterval(self.sensor_update_ms)
         self._queue_sensor_preferences()
 
+    def _rebuild_overview_page(self):
+        """Recreate the dashboard so a display-topology preference applies now."""
+        current_index = self.pages.currentIndex()
+        old_page = self.pages.widget(0)
+        self.pages.removeWidget(old_page)
+        old_page.deleteLater()
+        self.pages.insertWidget(0, self._build_overview_page())
+        self.pages.setCurrentIndex(current_index)
+
+    def open_settings(self):
+        dialog = SettingsDialog(
+            self.sensor_update_ms, self.show_disabled_cores, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        refresh_ms = self._sanitize_update_interval(dialog.refresh_input.value())
+        show_disabled_cores = dialog.show_disabled_cores.isChecked()
+        topology_changed = show_disabled_cores != self.show_disabled_cores
+        self.show_disabled_cores = show_disabled_cores
+        self._refresh_display_topology()
+        self._set_update_interval(refresh_ms)
+        self._save_config({
+            "sensor_update_ms": self.sensor_update_ms,
+            "show_disabled_cores": self.show_disabled_cores,
+        })
+        if topology_changed:
+            self._rebuild_overview_page()
+        self.log_msg("Settings saved.", "STATUS", ACCENT_GREEN)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "_preferences_timer") and hasattr(self, "sensor_tree"):
@@ -917,24 +1101,13 @@ class GNRMaster(QMainWindow):
         self._save_sensor_preferences()
         super().closeEvent(event)
 
-    def load_co_config(self):
-        try:
-            offsets = self.config.get("co_offsets", [])
-            return (offsets + [0] * self.core_count)[:self.core_count]
-        except Exception:
-            pass
-        return [0] * self.core_count
-
-    def save_co_config(self):
-        self._save_config({"co_offsets": self.current_co})
-
     def send_smu_cmd(self, msg_id, arg0=0):
         permission_reason = smu_write_permission_reason()
         if permission_reason:
             self._show_smu_error(permission_reason)
             return False
         ok, why = smu_writes_supported()
-        if not ok:
+        if not ok and not self._unvalidated_smu_override:
             self._show_smu_error(f"SMU writes disabled — {why}")
             return False
         if not smu_message_supported(self.profile, msg_id):
@@ -994,9 +1167,47 @@ class GNRMaster(QMainWindow):
             self._show_smu_error(permission_reason)
             return False
         ok, why = smu_writes_supported()
-        if not ok:
-            self._show_smu_error(f"SMU controls disabled — {why}")
-        return ok
+        if ok or self._unvalidated_smu_override:
+            return True
+        return self._confirm_unvalidated_smu_controls(why)
+
+    def _confirm_unvalidated_smu_controls(self, reason):
+        """Ask once per session before using a format-only control layout."""
+        candidate = unvalidated_smu_control_profile(self.profile)
+        if candidate is None:
+            self._show_smu_error(f"SMU controls disabled — {reason}")
+            return False
+
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("SMU control warning")
+        message.setText(
+            "SMU control writes are not validated for this CPU."
+        )
+        message.setInformativeText(
+            "Power-limit, thermal-limit, and Curve Optimizer changes may behave "
+            "unexpectedly and can make the system unstable.\n\n"
+            "Use at your own risk. Continue anyway?"
+        )
+        message.setMinimumWidth(500)
+        cancel_button = message.addButton(
+            "Cancel", QMessageBox.ButtonRole.RejectRole)
+        continue_button = message.addButton(
+            "Continue", QMessageBox.ButtonRole.AcceptRole)
+        message.setDefaultButton(cancel_button)
+        message.setEscapeButton(cancel_button)
+        message.exec()
+        if message.clickedButton() is not continue_button:
+            self.log_msg("Unvalidated SMU control declined by user.", "STATUS")
+            return False
+
+        self.profile = candidate
+        self._unvalidated_smu_override = True
+        self.log_msg(
+            "UNVALIDATED SMU CONTROL ENABLED for this session by user confirmation.",
+            "WARNING", ACCENT_ORANGE,
+        )
+        return True
 
     def open_power_control(self):
         if not self._smu_controls_available():
@@ -1043,10 +1254,10 @@ class GNRMaster(QMainWindow):
     def open_core_control(self):
         if not self._smu_controls_available():
             return
-        dlg = CoreControlDialog(self.current_co, self)
+        dlg = CoreControlDialog(self.current_co, self.core_slots, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            changed = [(i, spin.value()) for i, spin in enumerate(dlg.spins)
-                       if spin.value() != self.current_co[i]]
+            changed = [(core, spin.value()) for core, spin in dlg.spins.items()
+                       if spin.value() != self.current_co[core]]
             if not changed:
                 self.log_msg("Curve Optimizer unchanged; nothing sent.", "STATUS")
                 return
@@ -1059,9 +1270,8 @@ class GNRMaster(QMainWindow):
                 else:
                     break
             if applied:
-                self.save_co_config()
                 self.log_msg(
-                    f"CO offsets applied and cached for cores {applied}: "
+                    f"CO offsets applied for this session on cores {applied}: "
                     f"{self.current_co}", "STATUS", ACCENT_GREEN,
                 )
 
@@ -1098,17 +1308,17 @@ class GNRMaster(QMainWindow):
         ]
         temperatures.extend(
             (f"CPU CCD{ccd + 1}", temperature)
-            for ccd, temperature in enumerate(ccd_temperatures)
+            for ccd, temperature in zip(self.visible_ccds, ccd_temperatures)
         )
         temperatures.extend(
             (f"Core {core}", d[self.profile.core_temp + core])
-            for core in range(self.core_count)
+            for core in self.visible_core_slots
         )
         if self.profile.ccd_count:
             temperatures.extend(
                 (f"CCD L3 temperature {ccd + 1}",
                  d[self.profile.ccd_l3_temperature + ccd])
-                for ccd in range(self.profile.ccd_count)
+                for ccd in self.visible_ccds
             )
 
         for name, temperature in temperatures:
@@ -1128,18 +1338,17 @@ class GNRMaster(QMainWindow):
         return True
 
     def _update_sensor_tree(self, d):
-        ccd_count = max(1, (self.core_count + 7) // 8)
         tctl = (read_profile_tctl_temperature(self.profile)
                 if self._smn_readable else None)
         ccd_temperatures = [
             (read_profile_ccd_temperature(self.profile, ccd)
              if self._smn_readable else None)
-            for ccd in range(ccd_count)
+            for ccd in self.visible_ccds
         ]
         if not self._temperature_sample_is_valid(d, tctl, ccd_temperatures):
             return False
 
-        vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
+        vcores = [d[self.profile.core_voltage + slot] for slot in self.core_slots]
         self._set_sensor("tctl", tctl)
         self._set_summary("cpu", f"{tctl:.1f} °C" if tctl is not None else "--")
         self._set_sensor("ppt", d[3])
@@ -1177,8 +1386,8 @@ class GNRMaster(QMainWindow):
                 f"PPT {d[3]:.0f}/{d[2]:.0f} W · TDC {d[9]:.0f}/{d[8]:.0f} A · EDC {d[63]:.0f} A",
             )
         self._set_sensor("cpu_power", d[20])
-        self._set_sensor("core_power", sum(d[self.profile.core_power + i]
-                                            for i in range(self.core_count)))
+        self._set_sensor("core_power", sum(d[self.profile.core_power + slot]
+                                            for slot in self.core_slots))
         self._set_sensor("soc_power", d[21])
         self._set_sensor("vddio_power", d[22])
         self._set_sensor("vdd18_power", d[23])
@@ -1195,31 +1404,35 @@ class GNRMaster(QMainWindow):
         self._set_sensor("vid", d[19])
         self._set_sensor("vid_limit", d[18])
 
-        for ccd in range(ccd_count):
-            ccd_temp = ccd_temperatures[ccd]
+        for ccd, ccd_temp in zip(self.visible_ccds, ccd_temperatures):
             self._set_sensor(f"tccd{ccd}", ccd_temp)
             self._set_summary(
                 f"ccd{ccd}", f"{ccd_temp:.1f} °C" if ccd_temp is not None else "--"
             )
-            start = ccd * 8
-            stop = min(self.core_count, start + 8)
-            cc6_values = [d[self.profile.core_cc6 + core] for core in range(start, stop)]
+
+        # Per-CCD residency comes from PM lanes.  When the user opted in to
+        # disabled slots, expose their raw lane contents too. The direct CCD
+        # read above is also attempted, but can be invalid when firmware
+        # power-gates the CCD.
+        for ccd in self.visible_ccds:
+            ccd_slots = [slot for slot in self.visible_core_slots if slot // 8 == ccd]
+            cc6_values = [d[self.profile.core_cc6 + slot] for slot in ccd_slots]
             if self.profile.core_c0 is not None:
-                c0_values = [d[self.profile.core_c0 + core] for core in range(start, stop)]
-                cc1_values = [d[self.profile.core_cc1 + core] for core in range(start, stop)]
+                c0_values = [d[self.profile.core_c0 + slot] for slot in ccd_slots]
+                cc1_values = [d[self.profile.core_cc1 + slot] for slot in ccd_slots]
                 self._set_sensor(f"ccd_c0_{ccd}", sum(c0_values) / len(c0_values))
                 self._set_sensor(f"ccd_cc1_{ccd}", sum(cc1_values) / len(cc1_values))
             else:
                 self._set_sensor(f"ccd_c0_{ccd}", 100 - sum(cc6_values) / len(cc6_values))
             self._set_sensor(f"ccd_cc6_{ccd}", sum(cc6_values) / len(cc6_values))
         if self.profile.ccd_count:
-            for ccd in range(self.profile.ccd_count):
+            for ccd in self.visible_ccds:
                 self._set_sensor(f"ccd_l3_temp_{ccd}", d[self.profile.ccd_l3_temperature + ccd])
 
         frequencies = []
-        for core in range(self.core_count):
+        for core in self.visible_core_slots:
             freq = self._core_frequency_mhz(d, core)
-            if freq is not None:
+            if core in self._active_slot_set and freq is not None:
                 frequencies.append(freq)
             self._set_sensor(f"core_temp_{core}", d[self.profile.core_temp + core])
             self._set_sensor(f"core_clock_{core}", freq)
@@ -1228,7 +1441,6 @@ class GNRMaster(QMainWindow):
             if self.profile.core_fit is not None:
                 self._set_sensor(f"core_fit_{core}", d[self.profile.core_fit + core])
             self._set_sensor(f"core_cc6_{core}", d[self.profile.core_cc6 + core])
-            self._set_sensor(f"co_{core}", self.current_co[core])
             if self.profile.core_c0 is not None:
                 self._set_sensor(f"core_c0_{core}", d[self.profile.core_c0 + core])
                 self._set_sensor(f"core_cc1_{core}", d[self.profile.core_cc1 + core])

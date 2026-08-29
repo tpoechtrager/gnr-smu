@@ -6,12 +6,15 @@ SMU writes have a separate, stricter gate: validating read-only telemetry on a C
 does not establish that mailbox commands or Curve Optimizer IDs are safe on it.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import os
 import struct
 from typing import Optional
 
 VERSION_PATH = "/sys/kernel/ryzen_smu_drv/pm_table_version"
 SIZE_PATH = "/sys/kernel/ryzen_smu_drv/pm_table_size"
+GRANITE_RIDGE_FAMILY = 0x1A
+GRANITE_RIDGE_MODEL = 0x44
 
 
 @dataclass(frozen=True)
@@ -55,24 +58,22 @@ class HardwareProfile:
     co_mode: str
     co_msg: int = 0
     allow_smu_writes: bool = False
-    # Direct Tctl/Tdie register. Like the CCD registers below, this is separate
-    # from the PM table and is never inferred for an unknown profile.
+    # Direct Tctl/Tdie register. It is separate from the PM table but shared
+    # by the family/model-gated Granite Ridge format decoders.
     tctl_smn_address: Optional[int] = None
-    # Direct CCD temperature registers. These are read-only SMN locations, separate
-    # from the PM table. They are explicit per-profile so an unknown CPU never gets
-    # a guessed raw-SMN address.
+    # Direct CCD temperature registers. These read-only SMN locations are
+    # separate from the PM table and explicit in every format decoder.
     ccd_smn_temp_addresses: tuple = ()
-    # Read-only I/O-die temperature lanes. The profile lists only registers whose
-    # validity mask and temperature encoding have been established for that exact
-    # CPU/table combination.
+    # Read-only I/O-die lanes with a Granite-Ridge-established validity mask
+    # and temperature encoding.
     iod_smn_temp_addresses: tuple = ()
     iod_smn_temp_valid_bit: int = 0
     iod_smn_temp_field_shift: int = 0
     iod_smn_lane_numbers: tuple = ()
     ccd_shared_temperature: Optional[int] = None
     edc_value: Optional[int] = None
-    # Read-only thermal throttle status register and masks.  These are kept
-    # profile-specific so an unknown CPU never gets a guessed SMN address.
+    # Read-only thermal throttle status register and masks, shared by the
+    # Granite Ridge family/model-gated format decoders.
     prochot_smn_address: Optional[int] = None
     prochot_ext_mask: int = 0
     prochot_cpu_mask: int = 0
@@ -81,15 +82,47 @@ class HardwareProfile:
     # intentionally profile-specific: command IDs are not portable across
     # SMU generations.
     thermal_msg: Optional[int] = None
+    # Geometric PM lanes. This is deliberately separate from ``cores``:
+    # a 6-/12-core part still has an 8-/16-slot PM format.
+    slot_count: int = 0
+    # Unlisted models require this read to identify populated PM lanes. Exact
+    # write-approved models retain their established dense fallback.
+    requires_topology_mask: bool = False
 
     @property
     def float_count(self):
         return self.table_size // 4
 
 
-PROFILES = {
-    (0x620105, 1828, 8): HardwareProfile(
-        "AMD Ryzen 7 9800X3D", "AMD Ryzen 7 9800X3D", 0x620105, 1828, 8,
+@dataclass(frozen=True)
+class WritePolicy:
+    """One exact CPU/model authorization for mailbox writes.
+
+    The policy deliberately contains no telemetry offsets. Those belong to a
+    PM format decoder and are selected before this policy is considered.
+    """
+    name: str
+    cpu_model: str
+    pm_version: int
+    table_size: int
+    cores: int
+    ppt_msg: int
+    tdc_msg: int
+    edc_msg: int
+    stock_ppt: int
+    stock_tdc: int
+    stock_edc: int
+    co_mode: str
+    co_msg: int = 0
+    thermal_msg: Optional[int] = None
+
+
+# PM-table decoders are selected solely by their runtime header. They contain
+# telemetry offsets and shared Granite Ridge read-only SMN paths, never a SKU
+# write authorization.
+FORMAT_PROFILES = {
+    (0x620105, 1828): HardwareProfile(
+        "Granite Ridge 8-slot PM format (read-only)", "", 0x620105, 1828, 0,
         core_power=333, core_voltage=309, core_temp=317, core_frequency=325,
         core_fit=341, core_activity=357, core_c0=None, core_cc1=None,
         core_cc6=349, core_boost_limit=373, boost_limit_confident=True,
@@ -97,11 +130,9 @@ PROFILES = {
         # Per-CCD L3 cache temperature for the 0x620105 layout.  This is the
         # profile-specific d[448 + CCD] lane; the 9800X3D has one CCD.
         ccd_l3_temperature=448, ccd_count=1,
-        # Confirmed by read-back in research/probe_tdc_edc.py.
-        ppt_msg=0x3E, tdc_msg=0x3C, edc_msg=0x3D,
-        stock_ppt=162, stock_tdc=120, stock_edc=180,
-        co_mode="legacy_per_message",
-        allow_smu_writes=True,
+        ppt_msg=0, tdc_msg=0, edc_msg=0,
+        stock_ppt=0, stock_tdc=0, stock_edc=0,
+        co_mode="read_only",
         tctl_smn_address=0x59800,
         # Linux k10temp maps Zen 5 Ryzen Desktop Tccd1 to 0x59800 + 0x308.
         ccd_smn_temp_addresses=(0x59B08,),
@@ -112,10 +143,11 @@ PROFILES = {
         iod_smn_lane_numbers=(1, 2, 4, 5),
         prochot_smn_address=0x59804,
         prochot_ext_mask=0x04, prochot_cpu_mask=0x08, htc_mask=0x10,
-        thermal_msg=0x3F,
+        slot_count=8,
+        requires_topology_mask=True,
     ),
-    (0x620205, 2452, 16): HardwareProfile(
-        "AMD Ryzen 9 9950X3D", "AMD Ryzen 9 9950X3D", 0x620205, 2452, 16,
+    (0x620205, 2452): HardwareProfile(
+        "Granite Ridge 16-slot PM format (read-only)", "", 0x620205, 2452, 0,
         core_power=301, core_voltage=317, core_temp=333, core_frequency=349,
         # Ryzen Master multiplies d[349+i] by 1000 before exposing its
         # per-core clock array. Live comparison on this 9950X3D found
@@ -157,12 +189,9 @@ PROFILES = {
         ccd_shared_temperature=611,
         ccd_power_candidate=589, ccd_vddm_candidate=591,
         ccd_l3_temperature=595, ccd_count=2,
-        # ZenStates-Core's Granite Ridge profile inherits the Zen 4 MP1 command
-        # table: Fast/PPT=0x3E, TDC=0x3C, EDC=0x3D, per-core DLDO margin=0x35.
-        ppt_msg=0x3E, tdc_msg=0x3C, edc_msg=0x3D,
-        stock_ppt=200, stock_tdc=160, stock_edc=225,
-        co_mode="packed_core_mask", co_msg=0x35,
-        allow_smu_writes=True,
+        ppt_msg=0, tdc_msg=0, edc_msg=0,
+        stock_ppt=0, stock_tdc=0, stock_edc=0,
+        co_mode="read_only",
         tctl_smn_address=0x59800,
         # Same Zen 5 Desktop register block: Tccd1, Tccd2.
         ccd_smn_temp_addresses=(0x59B08, 0x59B0C),
@@ -178,9 +207,41 @@ PROFILES = {
         edc_value=64,
         prochot_smn_address=0x59804,
         prochot_ext_mask=0x04, prochot_cpu_mask=0x08, htc_mask=0x10,
-        thermal_msg=0x3F,
+        slot_count=16,
+        requires_topology_mask=True,
     ),
 }
+
+WRITE_POLICIES = (
+    WritePolicy(
+        "AMD Ryzen 7 9800X3D", "AMD Ryzen 7 9800X3D", 0x620105, 1828, 8,
+        ppt_msg=0x3E, tdc_msg=0x3C, edc_msg=0x3D,
+        stock_ppt=162, stock_tdc=120, stock_edc=180,
+        co_mode="legacy_per_message", thermal_msg=0x3F,
+    ),
+    WritePolicy(
+        "AMD Ryzen 9 9950X3D", "AMD Ryzen 9 9950X3D", 0x620205, 2452, 16,
+        ppt_msg=0x3E, tdc_msg=0x3C, edc_msg=0x3D,
+        stock_ppt=200, stock_tdc=160, stock_edc=225,
+        co_mode="packed_core_mask", co_msg=0x35, thermal_msg=0x3F,
+    ),
+)
+
+# Candidate command layouts are intentionally separate from WRITE_POLICIES.
+# The GUI may use one only after a per-session, user-visible risk confirmation;
+# the global write gate remains closed for every unlisted model.
+UNVALIDATED_CONTROL_POLICIES = {
+    (0x620105, 1828): replace(WRITE_POLICIES[0], name="8-slot control candidate",
+                              cpu_model="", cores=0),
+    (0x620205, 2452): replace(WRITE_POLICIES[1], name="16-slot control candidate",
+                              cpu_model="", cores=0),
+}
+
+# Opt-in integration-test mode.  It makes a known CPU exercise the same
+# header-selected decoder used for an unlisted SKU, while keeping every mailbox
+# write disabled.  It is intentionally an environment variable so ordinary
+# launches retain the exact, validated profile.
+FORCE_GENERIC_READ_PROFILE_ENV = "GNR_FORCE_GENERIC_READ_PROFILE"
 
 # MP1 message IDs that must never be sent, wherever the send happens. This lived as a
 # set literal in the CLI and as two separate ifs in the GUI, and the research tools had
@@ -247,8 +308,121 @@ def _cpu_model(cpuinfo="/proc/cpuinfo"):
     return ""
 
 
+def detected_cpu_model(cpuinfo="/proc/cpuinfo"):
+    """Return the Linux-reported CPU model for user-facing display."""
+    return _cpu_model(cpuinfo) or "Unknown CPU"
+
+
+def _cpu_signature(cpuinfo="/proc/cpuinfo"):
+    """Return Linux's ``(family, model)`` pair, or ``(None, None)``.
+
+    Generic PM profiles need this additional guard before using the Granite
+    Ridge topology register.  A matching PM header alone is not permission to
+    read a model-specific SMN address on another CPU family.
+    """
+    family = model = None
+    try:
+        with open(cpuinfo) as f:
+            for line in f:
+                key, separator, value = line.partition(":")
+                if not separator:
+                    continue
+                if key.strip() == "cpu family":
+                    family = int(value.strip(), 0)
+                elif key.strip() == "model":
+                    model = int(value.strip(), 0)
+                if family is not None and model is not None:
+                    break
+    except (OSError, ValueError):
+        pass
+    return family, model
+
+
+def _is_granite_ridge(cpuinfo="/proc/cpuinfo"):
+    """Whether Linux identifies the current CPU as Granite Ridge desktop."""
+    return _cpu_signature(cpuinfo) == (GRANITE_RIDGE_FAMILY,
+                                       GRANITE_RIDGE_MODEL)
+
+
+def _matching_write_policy(cpu_model, version, table_size, cores):
+    """Return an exact model/header write authorization, if any.
+
+    Firmware can disable individual physical slots or an entire CCD.  Linux
+    then reports fewer physical cores although the installed, exact SKU and
+    its PM-table format have not changed.  Core count is therefore a sanity
+    ceiling rather than part of the model authorization.
+    """
+    for policy in WRITE_POLICIES:
+        if (version, table_size) != (policy.pm_version, policy.table_size):
+            continue
+        if cores and cores > policy.cores:
+            continue
+        # Linux appends a core-count suffix. The required space makes this a
+        # whole model-name match, so 9950X3D2 cannot match 9950X3D.
+        if cpu_model.startswith(policy.cpu_model + " "):
+            return policy
+    return None
+
+
+def _attach_write_policy(decoder, policy):
+    """Return a format decoder with one separately validated write policy."""
+    return replace(
+        decoder,
+        name=policy.name,
+        cpu_model=policy.cpu_model,
+        ppt_msg=policy.ppt_msg,
+        tdc_msg=policy.tdc_msg,
+        edc_msg=policy.edc_msg,
+        stock_ppt=policy.stock_ppt,
+        stock_tdc=policy.stock_tdc,
+        stock_edc=policy.stock_edc,
+        # ``cores`` is the geometric command range, not Linux's count of
+        # currently enabled slots.  The GUI separately limits its controls to
+        # the active-slot bitmap before constructing a CO command.
+        cores=policy.cores,
+        co_mode=policy.co_mode,
+        co_msg=policy.co_msg,
+        thermal_msg=policy.thermal_msg,
+        allow_smu_writes=True,
+        requires_topology_mask=False,
+    )
+
+
+def unvalidated_smu_control_profile(profile):
+    """Attach a candidate control layout after an explicit GUI confirmation.
+
+    This function does *not* authorize a write: ``allow_smu_writes`` remains
+    false and callers must retain their own per-session confirmation state.
+    It only supplies the format-matched message layout required to construct a
+    command after the user deliberately accepts the warning.
+    """
+    if profile is None:
+        return None
+    candidate = UNVALIDATED_CONTROL_POLICIES.get(
+        (profile.pm_version, profile.table_size))
+    if candidate is None:
+        return None
+    return replace(
+        profile,
+        ppt_msg=candidate.ppt_msg,
+        tdc_msg=candidate.tdc_msg,
+        edc_msg=candidate.edc_msg,
+        stock_ppt=candidate.stock_ppt,
+        stock_tdc=candidate.stock_tdc,
+        stock_edc=candidate.stock_edc,
+        co_mode=candidate.co_mode,
+        co_msg=candidate.co_msg,
+        thermal_msg=candidate.thermal_msg,
+        allow_smu_writes=False,
+    )
+
+
 def get_hardware_profile():
-    """Return ``(profile_or_none, reason)``; cached for the process lifetime."""
+    """Return ``(profile_or_none, reason)``; cached for the process lifetime.
+
+    Set ``GNR_FORCE_GENERIC_READ_PROFILE=1`` before process start to test the
+    header-selected read-only decoder on an otherwise exact-profile CPU.
+    """
     global _cached
     if _cached is not None:
         return _cached
@@ -260,20 +434,29 @@ def get_hardware_profile():
         return _cached
 
     cores = _core_count()
-    profile = PROFILES.get((version, table_size, cores))
+    decoder = FORMAT_PROFILES.get((version, table_size))
+    decoder_allowed = decoder is not None and _is_granite_ridge()
+    force_generic = os.environ.get(FORCE_GENERIC_READ_PROFILE_ENV) == "1"
     cpu_model = _cpu_model()
-    if profile is not None and profile.cpu_model not in cpu_model:
-        profile = None
+    profile = replace(decoder, cores=cores) if decoder_allowed else None
+    policy = (None if force_generic else
+              _matching_write_policy(cpu_model, version, table_size, cores))
+    if profile is not None and policy is not None:
+        profile = _attach_write_policy(profile, policy)
     if profile is None:
+        generic_note = ("; generic Granite Ridge decoder requires family 0x1a, "
+                        "model 0x44" if decoder is not None else "")
         _cached = (
             None,
             f"unsupported PM table {hex(version)}, {table_size} bytes, "
-            f"{cores or 'unknown'} physical cores, CPU {cpu_model or 'unknown'}",
+            f"{cores or 'unknown'} physical cores, CPU {cpu_model or 'unknown'}"
+            f"{generic_note}",
         )
         return _cached
     _cached = (
         profile,
-        f"{profile.name}: PM table {hex(version)}, {table_size} bytes, {cores} cores",
+        f"{profile.name}: PM table {hex(version)}, {table_size} bytes, {cores} cores"
+        + (" (forced format decoder)" if force_generic else ""),
     )
     return _cached
 
@@ -324,7 +507,9 @@ def curve_optimizer_command(profile, core, margin):
 def map_labels_supported():
     """The full PM_TABLE_MAP.md is currently the 9800X3D/457-float map."""
     profile, _ = get_hardware_profile()
-    return profile is not None and profile.pm_version == 0x620105
+    return (profile is not None
+            and profile.cpu_model == "AMD Ryzen 7 9800X3D"
+            and profile.pm_version == 0x620105)
 
 
 if __name__ == "__main__":
@@ -333,21 +518,39 @@ if __name__ == "__main__":
     # The parser is the only part worth checking without the hardware present. Use
     # real blank-line-separated processor blocks so the fixture matches /proc/cpuinfo.
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+        f.write("processor\t: 0\ncpu family\t: 26\nmodel\t\t: 68\n"
+                "physical id\t: 0\ncore id\t\t: 0\n\n"
                 "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n"
                 "processor\t: 2\nphysical id\t: 0\ncore id\t\t: 1\n")
         two_cores = f.name
     assert _core_count(two_cores) == 2, "two distinct physical cores"
     assert _core_count("/nonexistent") == 0, "unreadable cpuinfo must not claim a count"
+    assert _is_granite_ridge(two_cores), "Granite Ridge family/model parser"
 
     for blocked_id in (0x03, 0x0D, 0x10, 0x58, 0x5D):
         assert msg_id_blocked(blocked_id)[0], f"0x{blocked_id:02x} must be blocked"
     for allowed_id in (0x02, 0x0E, 0x3C, 0x3D, 0x3E, 0x50, 0x57, 0x5E):
         assert not msg_id_blocked(allowed_id)[0], f"0x{allowed_id:02x} must be allowed"
 
-    for profile_key, test_profile in PROFILES.items():
-        assert (test_profile.ppt_msg, test_profile.tdc_msg, test_profile.edc_msg) == \
-            (0x3E, 0x3C, 0x3D), f"wrong power-limit mapping for {test_profile.name}"
+    for decoder in FORMAT_PROFILES.values():
+        assert not decoder.allow_smu_writes, f"decoder must be read-only: {decoder.name}"
+        assert decoder.requires_topology_mask, "unlisted model needs topology mask"
+    for policy in WRITE_POLICIES:
+        assert (policy.ppt_msg, policy.tdc_msg, policy.edc_msg) == (0x3E, 0x3C, 0x3D), \
+            f"wrong power-limit mapping for {policy.name}"
+        assert _matching_write_policy(
+            policy.cpu_model + " 16-Core Processor", policy.pm_version,
+            policy.table_size, policy.cores) == policy
+    assert _matching_write_policy(
+        "AMD Ryzen 9 9950X3D 16-Core Processor", 0x620205, 2452, 8) == WRITE_POLICIES[1]
+    assert _matching_write_policy("AMD Ryzen 9 9950X3D2 16-Core Processor",
+                                  0x620205, 2452, 16) is None
+    for key, candidate in UNVALIDATED_CONTROL_POLICIES.items():
+        decoder = replace(FORMAT_PROFILES[key], cores=FORMAT_PROFILES[key].slot_count)
+        control_profile = unvalidated_smu_control_profile(decoder)
+        assert control_profile is not None and not control_profile.allow_smu_writes
+        assert smu_message_supported(control_profile, candidate.ppt_msg)
+        assert smu_message_supported(control_profile, candidate.thermal_msg)
 
     profile, why = get_hardware_profile()
     print(f"{'SUPPORTED' if profile else 'REFUSED'}: {why}")

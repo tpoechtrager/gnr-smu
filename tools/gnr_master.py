@@ -2,17 +2,11 @@
 import sys
 import os
 import struct
-import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import (curve_optimizer_command, get_hardware_profile,
                     msg_id_blocked, smu_message_supported,
                     smu_writes_supported)
-
-CONFIG_PATH = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
-    "gnr_master.json",
-)
 
 # Stock limits and MP1 message IDs live on the detected hardware profile. The
 # never-send list also lives in hwgate.py so CLI, GUI and research tools cannot drift.
@@ -56,19 +50,6 @@ def apply_cmd(msg_id, arg0):
     except Exception as e:
         print(f"[ERROR] Driver write failed: {e}")
         return False
-
-def save_co_config(co_val):
-    try:
-        profile, _ = get_hardware_profile()
-        cores = profile.cores if profile else 8
-        data = {"co_offsets": [co_val] * cores}
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(data, f)
-    except OSError as e:
-        # This used to swallow the error. The offsets are write-only — the SMU will
-        # not read them back — so a failed save means the GUI shows 0 for settings
-        # that are actually applied.
-        print(f"[WARN] could not cache CO offsets to {CONFIG_PATH}: {e}")
 
 def ask_limit(name, unit, max_val):
     """Bounded numeric input. The GUI clamps these with spin-box ranges; the CLI took
@@ -146,8 +127,7 @@ def main():
                 applied = False
                 break
         if applied:
-            save_co_config(-30)
-            print("CO -30 applied and saved locally for the GUI!")
+            print("CO -30 applied.")
     elif choice == '6':
         applied = apply_cmd(profile.ppt_msg, profile.stock_ppt * 1000)
         if applied:
@@ -161,7 +141,6 @@ def main():
                     applied = False
                     break
         if applied:
-            save_co_config(0)
             print("Reset successful.")
     
 if __name__ == "__main__":

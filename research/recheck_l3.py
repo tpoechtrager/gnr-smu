@@ -3,11 +3,11 @@
 
 The current profile maps L3 temps to d[595]/d[596]. The dump also shows a second
 temperature-like pair at d[611]/d[612] (~6-7 °C above the core temps). To find
-which pair HWiNFO calls "L3 Cache (CCDx)", load each CCD separately and watch
+which pair represents L3 Cache (CCDx), load each CCD separately and watch
 which lanes rise selectively with that CCD, and how each lane relates to the
 per-core temps d[333..348] and k10temp Tccd1/Tccd2.
 
-HWiNFO L3 behaviour (from reference screenshot, idle-ish desktop):
+Expected L3 behavior (idle-ish desktop reference):
   * two per-CCD values
   * each sits slightly *above* its CCD's average core temp (+1.7/+2.0 °C)
   * clearly *below* the CCD Tdie hotspot (Tdie - 2.6 / -6.2 °C)
@@ -166,7 +166,7 @@ def main():
 
     print("\nInterpretation hints:")
     print("  * true per-CCD L3 lane rises selectively when ITS CCD is loaded")
-    print("  * HWiNFO L3 sits slightly above avg core temp, below Tdie")
+    print("  * L3 sits slightly above average core temp, below Tdie")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import get_hardware_profile, map_labels_supported  # noqa: E402
+from smn_telemetry import read_profile_active_core_slots  # noqa: E402
 
 PM = "/sys/kernel/ryzen_smu_drv/pm_table"
 MAP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -79,8 +80,14 @@ def main():
     if not map_labels_supported():
         print(f"# no full labelled map for this profile: {why}")
         if profile:
-            print(f"# validated per-core temperatures: d[{profile.core_temp}-"
-                  f"{profile.core_temp + profile.cores - 1}] (direct degrees C)")
+            slots = read_profile_active_core_slots(profile)
+            if slots is None and profile.requires_topology_mask:
+                print("# per-core lanes not listed: the active-slot mask is unavailable")
+            else:
+                slots = slots or tuple(range(profile.slot_count or profile.cores))
+                indices = ", ".join(str(profile.core_temp + slot) for slot in slots)
+                print(f"# validated per-core temperature lanes: d[{indices}] "
+                      "(direct degrees C)")
         print("# raw values otherwise — the 9800X3D PM_TABLE_MAP.md does not apply here.")
         print(f"# Please attach this dump and your CPU model to an issue.\n")
         for i, v in enumerate(floats):

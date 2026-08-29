@@ -17,7 +17,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hwgate import get_hardware_profile  # noqa: E402
-from smn_telemetry import read_profile_iod_lanes, read_profile_prochot_status  # noqa: E402
+from smn_telemetry import (read_profile_active_core_slots, read_profile_iod_lanes,
+                           read_profile_prochot_status)  # noqa: E402
 
 PM_TABLE_PATH = "/sys/kernel/ryzen_smu_drv/pm_table"
 VERSION_PATH  = "/sys/kernel/ryzen_smu_drv/pm_table_version"
@@ -80,8 +81,26 @@ def global_fields(profile):
     return fields
 
 
-def named_fields(profile):
+def active_slots(profile):
+    """Return PM positions that belong to usable physical cores.
+
+    Generic profiles have known binary layout but not a SKU-specific topology.
+    They must read the hardware bitmap so disabled lanes cannot leak into the
+    output as fake core sensors.  Exact profiles retain their established
+    dense fallback when direct topology access is unavailable.
+    """
+    slots = read_profile_active_core_slots(profile)
+    if slots is not None:
+        return slots
+    if profile.requires_topology_mask:
+        sys.exit("cannot read Granite Ridge active-slot mask; run with sudo so "
+                 "disabled PM slots are never exported as cores")
+    return tuple(range(profile.slot_count or profile.cores))
+
+
+def named_fields(profile, slots=None):
     fields = global_fields(profile)
+    slots = active_slots(profile) if slots is None else slots
     if profile.ccd_l3_temperature is not None:
         for ccd in range(profile.ccd_count):
             fields.append(
@@ -96,7 +115,7 @@ def named_fields(profile):
     if profile.iod_smn_temp_addresses:
         fields += [(f"iod_lane_{lane}", None, "C")
                    for lane in range(len(profile.iod_smn_temp_addresses))]
-    for core in range(profile.cores):
+    for core in slots:
         fields.append((f"c{core}_power", profile.core_power + core, "W"))
         fields.append((f"c{core}_voltage", profile.core_voltage + core, "V"))
         fields.append((f"c{core}_temp", profile.core_temp + core, "C"))
@@ -155,10 +174,11 @@ def get_floats(profile):
     return list(struct.unpack(f"<{profile.float_count}f", data))
 
 
-def floats_to_row(d, ts, profile, fields=None):
+def floats_to_row(d, ts, profile, fields=None, slots=None):
     row = {}
-    fields = fields or named_fields(profile)
-    vcores = [d[profile.core_voltage + i] for i in range(profile.cores)]
+    slots = active_slots(profile) if slots is None else slots
+    fields = fields or named_fields(profile, slots)
+    vcores = [d[profile.core_voltage + slot] for slot in slots]
     thermal = read_profile_prochot_status(profile)
     iod_lanes = read_profile_iod_lanes(profile)
     for name, idx, _ in fields:
@@ -167,7 +187,7 @@ def floats_to_row(d, ts, profile, fields=None):
         elif name == "vcore_peak":
             row[name] = f"{max(vcores):.4f}"
         elif name == "vcore_avg":
-            row[name] = f"{sum(vcores)/profile.cores:.4f}"
+            row[name] = f"{sum(vcores)/len(vcores):.4f}"
         elif name in thermal:
             value = thermal[name]
             row[name] = "Unavailable" if value is None else ("Yes" if value else "No")
@@ -224,7 +244,8 @@ def cmd_json():
 
 def cmd_csv(live_interval=None):
     profile = require_supported_hardware()
-    fields = named_fields(profile)
+    slots = active_slots(profile)
+    fields = named_fields(profile, slots)
     fieldnames = [name for name, _, _ in fields]
     mode, write_header = csv_output_mode(fieldnames, live_interval)
     with open(CSV_OUTPUT, mode, newline="") as f:
@@ -234,7 +255,7 @@ def cmd_csv(live_interval=None):
 
         if live_interval is None:
             d = get_floats(profile)
-            writer.writerow(floats_to_row(d, time.time(), profile, fields))
+            writer.writerow(floats_to_row(d, time.time(), profile, fields, slots))
             print(f"✅ Snapshot -> {CSV_OUTPUT}")
         else:
             print(f"Live logging every {live_interval}s -> {CSV_OUTPUT}  (Ctrl+C to stop)")
@@ -242,12 +263,11 @@ def cmd_csv(live_interval=None):
             try:
                 while True:
                     d = get_floats(profile)
-                    writer.writerow(floats_to_row(d, time.time(), profile, fields))
+                    writer.writerow(floats_to_row(d, time.time(), profile, fields, slots))
                     f.flush()
                     n += 1
                     pkg = d[3]
-                    max_temp = max(d[profile.core_temp + i]
-                                   for i in range(profile.cores))
+                    max_temp = max(d[profile.core_temp + slot] for slot in slots)
                     print(f"\r  [{n}] Pkg: {pkg:.1f}W  MaxTemp: {max_temp:.1f}°C", end="", flush=True)
                     time.sleep(live_interval)
             except KeyboardInterrupt:
@@ -258,8 +278,8 @@ def cmd_temps():
     profile = require_supported_hardware()
     d = get_floats(profile)
     print(f"Per-core temperatures — {profile.name}")
-    for core in range(profile.cores):
-        print(f"Core {core:2}: {d[profile.core_temp + core]:5.1f} °C")
+    for slot in active_slots(profile):
+        print(f"Core slot {slot:2}: {d[profile.core_temp + slot]:5.1f} °C")
 
 
 def main():

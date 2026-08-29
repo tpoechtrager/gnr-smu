@@ -98,6 +98,11 @@ def main():
     profile, why = get_hardware_profile()
     if profile is None:
         raise SystemExit(f"refusing to interpret PM table: {why}")
+    if profile.requires_topology_mask:
+        raise SystemExit(
+            "this validation pins Linux core IDs and therefore requires an exact "
+            "model profile; use show_active_core_slots.py for generic topology"
+        )
     cpu_for_core = physical_core_cpus()
     if len(cpu_for_core) != profile.cores:
         raise SystemExit(f"topology reports {len(cpu_for_core)} cores, expected "
