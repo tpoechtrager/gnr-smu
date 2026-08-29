@@ -3,6 +3,7 @@ import struct
 import subprocess
 import json
 import os
+import math
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
@@ -14,6 +15,11 @@ CONFIG_PATH = os.path.join(
 SMN_PATH = "/sys/kernel/ryzen_smu_drv/smn"
 SMU_ARGS_PATH = "/sys/kernel/ryzen_smu_drv/smu_args"
 SMU_CMD_PATH = "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
+
+# Keep this deliberately broad: values such as -200 C remain valid, while
+# corrupt PM-table values after suspend/resume discard the complete snapshot.
+TEMPERATURE_SAMPLE_MIN_C = -300.0
+TEMPERATURE_SAMPLE_MAX_C = 1000.0
 
 # Only exact, measured PM-table profiles are accepted; tools/hwgate.py owns the
 # offsets and refuses unknown CPU/table combinations.
@@ -272,6 +278,7 @@ class GNRMaster(QMainWindow):
         self._build_interface()
         self._restore_window_size()
         self._show_unprivileged_warning()
+        self._temperature_sample_discarded = False
 
         self.log_msg(
             "Dashboard initialized. Listening to kernel logs...", "STATUS", ACCENT_GREEN
@@ -1082,10 +1089,57 @@ class GNRMaster(QMainWindow):
             return table[self.profile.core_frequency + core] * 1000
         return None
 
+    def _temperature_sample_is_valid(self, d, tctl, ccd_temperatures):
+        """Reject a whole snapshot if any displayed temperature is corrupt."""
+        temperatures = [
+            ("CPU (Tctl/Tdie)", tctl),
+            ("PM Tctl/Tdie", d[11]),
+            ("Thermal limit", d[10]),
+        ]
+        temperatures.extend(
+            (f"CPU CCD{ccd + 1}", temperature)
+            for ccd, temperature in enumerate(ccd_temperatures)
+        )
+        temperatures.extend(
+            (f"Core {core}", d[self.profile.core_temp + core])
+            for core in range(self.core_count)
+        )
+        if self.profile.ccd_count:
+            temperatures.extend(
+                (f"CCD L3 temperature {ccd + 1}",
+                 d[self.profile.ccd_l3_temperature + ccd])
+                for ccd in range(self.profile.ccd_count)
+            )
+
+        for name, temperature in temperatures:
+            if temperature is None:
+                continue
+            if (not math.isfinite(temperature)
+                    or not TEMPERATURE_SAMPLE_MIN_C <= temperature <= TEMPERATURE_SAMPLE_MAX_C):
+                if not self._temperature_sample_discarded:
+                    self.log_msg(
+                        f"Discarded telemetry sample: {name} reported "
+                        f"{temperature!r} °C.",
+                        "WARNING", ACCENT_ORANGE,
+                    )
+                self._temperature_sample_discarded = True
+                return False
+        self._temperature_sample_discarded = False
+        return True
+
     def _update_sensor_tree(self, d):
-        vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
+        ccd_count = max(1, (self.core_count + 7) // 8)
         tctl = (read_profile_tctl_temperature(self.profile)
                 if self._smn_readable else None)
+        ccd_temperatures = [
+            (read_profile_ccd_temperature(self.profile, ccd)
+             if self._smn_readable else None)
+            for ccd in range(ccd_count)
+        ]
+        if not self._temperature_sample_is_valid(d, tctl, ccd_temperatures):
+            return False
+
+        vcores = [d[self.profile.core_voltage + i] for i in range(self.core_count)]
         self._set_sensor("tctl", tctl)
         self._set_summary("cpu", f"{tctl:.1f} °C" if tctl is not None else "--")
         self._set_sensor("ppt", d[3])
@@ -1141,10 +1195,8 @@ class GNRMaster(QMainWindow):
         self._set_sensor("vid", d[19])
         self._set_sensor("vid_limit", d[18])
 
-        ccd_count = max(1, (self.core_count + 7) // 8)
         for ccd in range(ccd_count):
-            ccd_temp = (read_profile_ccd_temperature(self.profile, ccd)
-                        if self._smn_readable else None)
+            ccd_temp = ccd_temperatures[ccd]
             self._set_sensor(f"tccd{ccd}", ccd_temp)
             self._set_summary(
                 f"ccd{ccd}", f"{ccd_temp:.1f} °C" if ccd_temp is not None else "--"
@@ -1186,6 +1238,7 @@ class GNRMaster(QMainWindow):
             self._set_summary("frequency", f"{max(frequencies):.0f} MHz")
         else:
             self._set_summary("frequency", "--")
+        return True
 
     def update_data(self):
         ok, why = hardware_supported()
@@ -1206,11 +1259,11 @@ class GNRMaster(QMainWindow):
                     # Zone 0x000 is the Zen (LIMIT, VALUE) pair layout — corrected
                     # 2026-07-30. d[8] is TDC (not EDC), d[10] is the thermal limit
                     # in °C (not TDC in A), and EDC's limit lives at d[63].
-                    self.current_ppt = d[2]
-                    self.current_edc = d[63]
-                    self.current_tdc = d[8]
-                    self.current_thermal = d[10]
-                    self._update_sensor_tree(d)
+                    if self._update_sensor_tree(d):
+                        self.current_ppt = d[2]
+                        self.current_edc = d[63]
+                        self.current_tdc = d[8]
+                        self.current_thermal = d[10]
 
         except FileNotFoundError:
             pass
