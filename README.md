@@ -161,9 +161,27 @@ Two measurement lessons from building it are worth stealing if you write your ow
   that apart from noise — at idle `k10temp` alone swings 46.6 → 64.6 °C on background
   activity.
 
+## Offline dump replay
+
+The GUI can replay a captured PM-table dump without loading `ryzen_smu`
+or accessing the installed CPU. This is useful for inspecting a report or debugging
+the display code against a known snapshot:
+
+```bash
+python3 tools/gui/gnr_master.py --emulate "AMD Ryzen 7 9800X3D" dumps/zen5/9800X3D.txt
+python3 tools/gui/gnr_master.py --emulate "AMD Ryzen 9 9950X3D" dumps/zen5/9950X3D.txt
+```
+
+`CPU_STRING` is display-only. The telemetry decoder is selected from the PM-table
+version in the dump header and its number of `d[...]` rows; unsupported combinations
+are rejected. The current formats are `0x620105` / 457 rows (8 slots) and
+`0x620205` / 613 rows (16 slots). Replay is read-only: direct SMN sensors and kernel
+log monitoring are disabled, and the Core Control and Power / Thermal buttons cannot
+be used.
+
 ## Tools
 
-All of them need the `ryzen_smu` driver loaded. Root is required for SMN reads and
+All live tools need the `ryzen_smu` driver loaded. Root is required for SMN reads and
 SMU writes; when the GUI is started without root it shows a warning and hides the
 direct-SMN sensors (Tctl/Tdie, CCD, IOD and PROCHOT/HTC), while PM-table telemetry
 remains available.

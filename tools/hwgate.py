@@ -504,6 +504,29 @@ def curve_optimizer_command(profile, core, margin):
     raise ValueError(f"unsupported CO command mode: {profile.co_mode}")
 
 
+def emulated_profile(cpu_model, pm_version, table_size):
+    """Return a read-only decoder for an offline PM-table dump.
+
+    The dump format selects telemetry offsets; the supplied CPU name is only
+    the displayed identity. A captured table never authorizes mailbox writes.
+    """
+    # Keep CPU identity separate from the format decoder: different CPUs can
+    # share a PM layout, while the captured data must never enable controls.
+    decoder = FORMAT_PROFILES.get((pm_version, table_size))
+    if decoder is None:
+        raise ValueError(
+            f"unsupported PM-table format {hex(pm_version)}, {table_size} bytes"
+        )
+    return replace(
+        decoder,
+        name=cpu_model,
+        cpu_model=cpu_model,
+        cores=decoder.slot_count or decoder.cores,
+        allow_smu_writes=False,
+        requires_topology_mask=False,
+    )
+
+
 def map_labels_supported():
     """The full PM_TABLE_MAP.md is currently the 9800X3D/457-float map."""
     profile, _ = get_hardware_profile()
@@ -531,6 +554,13 @@ if __name__ == "__main__":
         assert msg_id_blocked(blocked_id)[0], f"0x{blocked_id:02x} must be blocked"
     for allowed_id in (0x02, 0x0E, 0x3C, 0x3D, 0x3E, 0x50, 0x57, 0x5E):
         assert not msg_id_blocked(allowed_id)[0], f"0x{allowed_id:02x} must be allowed"
+
+    # Exercise format selection without coupling the self-test to a real SKU.
+    emu = emulated_profile("Replay CPU", 0x620105, 1828)
+    assert emu.cpu_model == "Replay CPU"
+    assert emu.pm_version == 0x620105 and emu.table_size == 1828
+    assert emu.cores == 8 and emu.ccd_count == 1
+    assert not emu.allow_smu_writes
 
     for decoder in FORMAT_PROFILES.values():
         assert not decoder.allow_smu_writes, f"decoder must be read-only: {decoder.name}"

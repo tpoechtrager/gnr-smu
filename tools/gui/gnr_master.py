@@ -1,9 +1,11 @@
-import sys
+import argparse
+import json
+import math
+import os
+import re
 import struct
 import subprocess
-import json
-import os
-import math
+import sys
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
@@ -24,14 +26,52 @@ TEMPERATURE_SAMPLE_MAX_C = 1000.0
 # ``hwgate`` owns PM offsets and the exact write gate. Unlisted models may
 # expose a format-matched candidate layout only after a per-session warning.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hwgate import (curve_optimizer_command, get_hardware_profile,
-                    detected_cpu_model, hardware_supported, msg_id_blocked,
+from hwgate import (curve_optimizer_command, detected_cpu_model,
+                    emulated_profile, get_hardware_profile,
+                    hardware_supported, msg_id_blocked,
                     smu_message_supported,
                     smu_writes_supported, unvalidated_smu_control_profile)  # noqa: E402
 from smn_telemetry import (read_profile_factory_enabled_ccds,
                            read_profile_factory_enabled_core_slots,
                            read_profile_iod_lanes,
                            read_profile_prochot_status)  # noqa: E402
+
+DUMP_ROW = re.compile(
+    r"^d\[\s*(\d+)\]\s+\(0x[0-9A-Fa-f]+\)\s+=\s+"
+    r"([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)"
+)
+DUMP_HEADER = re.compile(r"PM table\s+0x([0-9A-Fa-f]+),")
+
+
+def parse_pm_table_dump(path):
+    """Parse a labelled ``dump_table_full.py`` snapshot into a float tuple."""
+    values = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            match = DUMP_ROW.match(line)
+            if not match:
+                continue
+            values[int(match.group(1))] = float(match.group(2))
+    if not values:
+        raise ValueError(f"no PM-table rows in {path}")
+    count = max(values) + 1
+    missing = [index for index in range(count) if index not in values]
+    if missing:
+        preview = ", ".join(str(index) for index in missing[:8])
+        extra = f" (+{len(missing) - 8} more)" if len(missing) > 8 else ""
+        raise ValueError(f"{path} is missing d[{preview}]{extra}")
+    return tuple(values[index] for index in range(count))
+
+
+def parse_pm_table_version(path):
+    """Read the PM-table version declared by a dump header."""
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            match = DUMP_HEADER.search(line)
+            if match:
+                return int(match.group(1), 16)
+    raise ValueError(f"{path} has no PM-table version header")
+
 
 # --- Color Theme ---
 BG_MAIN = "#101722"
@@ -375,11 +415,32 @@ class TelemetryPanel(QFrame):
 
 # ================= APPLICATION PRINCIPALE =================
 class GNRMaster(QMainWindow):
-    def __init__(self):
+    def __init__(self, emulate_cpu=None, emulate_dump=None):
         super().__init__()
-        self._smn_readable = bool(getattr(os, "geteuid", lambda: 0)() == 0)
-        self.cpu_name = detected_cpu_model()
-        self.profile, self.profile_reason = get_hardware_profile()
+        self._emulated_table = None
+        self._emulate_dump_path = emulate_dump
+        if emulate_dump:
+            self._emulated_table = parse_pm_table_dump(emulate_dump)
+            # The dump header and row count choose the decoder; CPU_STRING is
+            # kept as display identity and does not affect telemetry offsets.
+            self.profile = emulated_profile(
+                emulate_cpu, parse_pm_table_version(emulate_dump),
+                len(self._emulated_table) * 4,
+            )
+            if len(self._emulated_table) != self.profile.float_count:
+                raise ValueError(
+                    f"{emulate_dump} has {len(self._emulated_table)} floats, "
+                    f"expected {self.profile.float_count} for this PM-table format"
+                )
+            self.profile_reason = (
+                f"emulated {emulate_cpu} from {os.path.abspath(emulate_dump)}"
+            )
+            self.cpu_name = emulate_cpu
+            self._smn_readable = False
+        else:
+            self._smn_readable = bool(getattr(os, "geteuid", lambda: 0)() == 0)
+            self.cpu_name = detected_cpu_model()
+            self.profile, self.profile_reason = get_hardware_profile()
         self.config = self._load_config()
         self.show_factory_disabled_topology = bool(
             self.config.get("show_factory_disabled_topology", False)
@@ -387,7 +448,10 @@ class GNRMaster(QMainWindow):
         # Never persisted: unvalidated control requires a fresh, explicit
         # acknowledgement every time the application starts.
         self._unvalidated_smu_override = False
-        factory_enabled_slots = read_profile_factory_enabled_core_slots(self.profile)
+        if self._emulated_table is not None:
+            factory_enabled_slots = tuple(range(self.profile.cores))
+        else:
+            factory_enabled_slots = read_profile_factory_enabled_core_slots(self.profile)
         if (factory_enabled_slots is None and self.profile
                 and self.profile.requires_topology_mask):
             self.profile = None
@@ -407,14 +471,16 @@ class GNRMaster(QMainWindow):
         # A PM format describes the maximum geometric CCD width.  The UI must
         # use only factory-enabled CCDs with at least one factory-enabled PM
         # slot. These fields do not identify a CCD disabled through the BIOS.
-        detected_ccds = read_profile_factory_enabled_ccds(self.profile)
+        detected_ccds = (
+            None if self._emulated_table is not None
+            else read_profile_factory_enabled_ccds(self.profile)
+        )
         self.factory_enabled_ccds = (
             detected_ccds if detected_ccds is not None else
             tuple(sorted({slot // 8 for slot in self.factory_enabled_core_slots}))
         )
         self._refresh_display_topology()
-        cpu_name = self.profile.name if self.profile else "Unsupported CPU"
-        self.setWindowTitle(f"GNR Master - {cpu_name} Telemetry")
+        self.setWindowTitle(f"GNR Master - {self.cpu_name} Telemetry")
         self.setMinimumSize(980, 620)
         self.setStyleSheet(
             f"background-color: {BG_MAIN}; color: {TEXT_MAIN}; font-family: 'Segoe UI';"
@@ -439,15 +505,20 @@ class GNRMaster(QMainWindow):
         self._show_unprivileged_warning()
         self._temperature_sample_discarded = False
 
-        self.log_msg(
-            "Dashboard initialized. Listening to kernel logs...", "STATUS", ACCENT_GREEN
-        )
-
-        self.log_worker = KernelLogWorker()
-        self.log_worker.log_signal.connect(
-            lambda msg: self.log_msg(msg, "KERNEL", ACCENT_PURPLE)
-        )
-        self.log_worker.start()
+        if self._emulated_table is not None:
+            self.log_msg(
+                f"Replaying PM-table dump: {self._emulate_dump_path}",
+                "STATUS", ACCENT_GREEN,
+            )
+        else:
+            self.log_msg(
+                "Dashboard initialized. Listening to kernel logs...", "STATUS", ACCENT_GREEN
+            )
+            self.log_worker = KernelLogWorker()
+            self.log_worker.log_signal.connect(
+                lambda msg: self.log_msg(msg, "KERNEL", ACCENT_PURPLE)
+            )
+            self.log_worker.start()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
@@ -507,6 +578,11 @@ class GNRMaster(QMainWindow):
         core_control.clicked.connect(self.open_core_control)
         power_control.clicked.connect(self.open_power_control)
         settings_control.clicked.connect(self.open_settings)
+        if self._emulated_table is not None:
+            # Replay never talks to the installed CPU, so make unavailable
+            # controls visibly unavailable instead of showing an error dialog.
+            core_control.setEnabled(False)
+            power_control.setEnabled(False)
         root_layout.addWidget(sidebar)
         root_layout.addWidget(self.pages, 1)
         self._show_page(0)
@@ -616,6 +692,8 @@ class GNRMaster(QMainWindow):
 
     def _show_unprivileged_warning(self):
         """Explain why direct SMN sensors are hidden without root privileges."""
+        if self._emulated_table is not None:
+            return
         suppress_warning = self.config.get("suppress_unprivileged_warning")
         if suppress_warning is None:
             # Migrate the short-lived inverse setting used by an earlier dialog
@@ -1168,6 +1246,9 @@ class GNRMaster(QMainWindow):
         super().closeEvent(event)
 
     def send_smu_cmd(self, msg_id, arg0=0):
+        if self._emulated_table is not None:
+            self._show_smu_error("SMU controls are disabled in dump emulation.")
+            return False
         permission_reason = smu_write_permission_reason()
         if permission_reason:
             self._show_smu_error(permission_reason)
@@ -1228,6 +1309,9 @@ class GNRMaster(QMainWindow):
         QMessageBox.critical(self, "SMU control failed", message)
 
     def _smu_controls_available(self):
+        if self._emulated_table is not None:
+            self._show_smu_error("SMU controls are disabled in dump emulation.")
+            return False
         permission_reason = smu_write_permission_reason()
         if permission_reason:
             self._show_smu_error(permission_reason)
@@ -1344,6 +1428,9 @@ class GNRMaster(QMainWindow):
     def _read_pm_limits(self):
         # Stock 9800X3D spec is the fallback: on unvalidated hardware these offsets
         # hold something else, and this feeds the write dialog's defaults.
+        if self._emulated_table is not None:
+            d = self._emulated_table
+            return d[2], d[8], d[63], d[10]
         if not hardware_supported()[0]:
             return 162.0, 120.0, 180.0, 95.0
         try:
@@ -1528,6 +1615,16 @@ class GNRMaster(QMainWindow):
         return True
 
     def update_data(self):
+        if self._emulated_table is not None:
+            # Replay the immutable snapshot on every tick without touching
+            # the PM-table or SMN interfaces.
+            d = self._emulated_table
+            if self._update_sensor_tree(d):
+                self.current_ppt = d[2]
+                self.current_edc = d[63]
+                self.current_tdc = d[8]
+                self.current_thermal = d[10]
+            return
         ok, why = hardware_supported()
         if not ok:
             # update_data runs on a timer; log the refusal once, not every tick.
@@ -1559,7 +1656,17 @@ class GNRMaster(QMainWindow):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="GNR Master telemetry GUI")
+    parser.add_argument(
+        "--emulate", nargs=2, metavar=("CPU_STRING", "DUMP"),
+        help="replay a PM-table dump with the supplied CPU identity",
+    )
+    args = parser.parse_args()
     app = QApplication(sys.argv)
-    w = GNRMaster()
-    w.show()
+    try:
+        emulate_cpu, emulate_dump = args.emulate or (None, None)
+        window = GNRMaster(emulate_cpu, emulate_dump)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    window.show()
     sys.exit(app.exec())
