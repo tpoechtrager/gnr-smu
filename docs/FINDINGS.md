@@ -28,14 +28,31 @@ Full size: `0x724` bytes. Fetched continuously alongside core metrics.
 For a complete variable-to-byte mapping, reference **[PM_TABLE_MAP.md](../PM_TABLE_MAP.md)**.
 
 *Notable discoveries via Pearson Correlation + cross-validation:*
-- **iGPU Clock (sclk):** Offset `0x1B0` — validated vs amdgpu freq1_input.
-- **iGPU Power (W):** Offset `0x1AC`.
+- **iGPU Clock candidate:** Offset `0x1B0`.
+- **iGPU Power candidate (W):** Offset `0x1AC`; no isolated public reference yet.
 - **Core Temperatures (°C):** Offsets `0x4F4-0x510` — direct °C, validated vs k10temp.
 - **Tctl (°C):** Offset `0x02C` — direct °C, matches k10temp Tctl within 1.1 °C at idle and at load. Its configured THM/HTC limit sits at `0x028` (95 °C for the supported profiles).
 - **Hotspot (°C):** Offset `0x438` — direct °C, 0-3 °C above Tctl on average, but very spiky (single reads hit +14 °C at idle). Average it. Previously mislabeled "TDC current".
 - **VDDCR_SoC:** Offset `0x0D4` (0.954V) — matches amdgpu vddnb (0.945V, 9mV delta).
-- **Vcore P1:** Offset `0x0C4` (1.213V) — matches amdgpu vddgfx (1.220V).
+- **Vcore P1:** Offset `0x0C4` (1.213V). This is a Vcore P1 field, not an
+  established iGPU-voltage mapping.
 - **VDDIO_MEM:** Offset `0x0E8` (1.099V) — matches DDR5 1.1V nominal.
+
+### iGPU fields
+
+The dashboard and named exporter use only PM-table positions and profile-approved
+SMN paths. `d[107]` is the iGPU-power candidate, `d[108]` is the iGPU-clock
+candidate, and `d[110]` is the experimental iGPU-utilization candidate. For PM table
+`0x620205`, idle/load behavior additionally supports `d[105]` as an iGPU/GFX
+voltage candidate and `d[106]` as a direct iGPU temperature candidate. No
+separate SMN address has been established for either field. `d[83]` remains a
+VDDCR_SOC/NB setpoint candidate.
+
+`d[186]`/`d[187]` are not Busy/Idle: controlled iGPU load leaves them
+approximately `0/100`. `d[109]` remains unnamed because it can exceed 100% and
+its unit is unresolved. `d[128]/d[129]` are static DPM values, not live GPU
+voltage. The d[105]/d[106] candidates are currently limited to the `0x620205`
+PM layout and remain medium-confidence mappings.
 
 **⚠ Corrected 2026-07-30 — there is no "temperature encoding".** Offsets `0x00C`, `0x024`,
 `0x100`, `0x2E8`, `0x348` were previously written up as non-linearly encoded temperatures.
@@ -46,7 +63,7 @@ They are not temperatures at all:
 | `0x00C` | PPT Value — total package power (W), 28 → 128 W under a 162 W limit |
 | `0x024` | TDC Value — live current (A), 9 → 87 A under a 120 A limit |
 | `0x100` | unidentified utilization metric, quantized to 0.125 steps |
-| `0x2E8` | iGPU activity (%), complement at `0x2EC` (pair sums to 100) |
+| `0x2E8` | dynamic metric; a PM-table busy/idle candidate with complement at `0x2EC` |
 | `0x348` | percentage, saturates at exactly 100 under load |
 
 Zone `0x000` is the standard Zen `(LIMIT, VALUE)` pair layout — `0x008`/`0x00C` = PPT,

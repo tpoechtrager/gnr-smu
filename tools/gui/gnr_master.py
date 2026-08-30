@@ -806,6 +806,35 @@ class GNRMaster(QMainWindow):
             ("vddio_power", "VDDIO MEM Power"), ("vdd18_power", "VDD18 Power"),
         ):
             self._add_sensor(power, key, label, "W")
+        igpu = self._add_sensor_group(None, "iGPU")
+        igpu_tooltips = {
+            "igpu_power": "iGPU power candidate from PM-table d[107].",
+            "igpu_clock": "iGPU clock candidate from PM-table d[108].",
+            "igpu_busy": ("Experimental iGPU utilization candidate from PM-table d[110]. "
+                          "d[186]/d[187] are tracked separately as Busy/Idle candidates."),
+            "igpu_idle": ("Experimental iGPU idle candidate from PM-table d[187]. "
+                          "It complements d[186] to approximately 100 percent."),
+            "igpu_temperature": ("iGPU temperature candidate from PM-table d[106]. "
+                                  "The mapping is validated by idle/load behavior for "
+                                  "the 0x620205 table; no SMN address is assumed."),
+            "gpu_voltage": ("iGPU/GFX voltage candidate from PM-table d[105]. "
+                            "The mapping is validated by idle/load behavior for "
+                            "the 0x620205 table; no SMN address is assumed."),
+        }
+        for key, label, unit in (
+            ("igpu_power", "iGPU Power", "W"),
+            ("igpu_clock", "iGPU Clock", "MHz"),
+            ("igpu_busy", "iGPU Utilization", "%"),
+            ("igpu_idle", "iGPU Idle", "%"),
+            ("igpu_temperature", "iGPU Temperature", "°C"),
+            ("gpu_voltage", "iGPU/GFX Voltage", "V"),
+        ):
+            self._add_sensor(igpu, key, label, unit, igpu_tooltips[key])
+        current_igpu_map = (self.profile is not None
+                            and self.profile.pm_version == 0x620205
+                            and self.profile.table_size == 2452)
+        for key in ("igpu_busy", "igpu_idle", "igpu_temperature", "gpu_voltage"):
+            self.sensor_items[key].setHidden(not current_igpu_map)
         core_power = self._add_sensor_group(power, "Core Powers")
         for core in self.visible_core_slots:
             self._add_sensor(core_power, f"core_power_{core}", self._core_label(core), "W")
@@ -1429,6 +1458,14 @@ class GNRMaster(QMainWindow):
         self._set_sensor("soc_power", d[21])
         self._set_sensor("vddio_power", d[22])
         self._set_sensor("vdd18_power", d[23])
+        self._set_sensor("igpu_power", d[107])
+        self._set_sensor("igpu_clock", d[108])
+        current_igpu_map = (self.profile.pm_version == 0x620205
+                            and self.profile.table_size == 2452)
+        self._set_sensor("igpu_busy", d[110] if current_igpu_map else None)
+        self._set_sensor("igpu_idle", d[187] if current_igpu_map else None)
+        self._set_sensor("igpu_temperature", d[106] if current_igpu_map else None)
+        self._set_sensor("gpu_voltage", d[105] if current_igpu_map else None)
         self._set_sensor("fclk", d[71])
         self._set_sensor("uclk", d[75])
         self._set_sensor("mclk", d[79])
