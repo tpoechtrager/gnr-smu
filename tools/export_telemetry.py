@@ -45,24 +45,32 @@ COMMON_FIELDS = [
     ("mclk",             79,    "MHz"),
 ]
 
-# These iGPU values are read only from shared CPU PM-table positions.
-IGPU_PM_FIELDS = [
-    ("igpu_power", 107, "W"),
-    ("igpu_clock", 108, "MHz"),
-]
+# These are the common iGPU fields shown for both supported PM formats.
+IGPU_FIELD_UNITS = {
+    "igpu_power": "W",
+    "igpu_clock": "MHz",
+    "igpu_busy": "%",
+    "igpu_idle": "%",
+    "igpu_temperature": "C",
+    "igpu_voltage": "V",
+}
 
 
 def global_fields(profile):
     """Return only fields whose meaning is established for this table version."""
-    fields = list(COMMON_FIELDS) + list(IGPU_PM_FIELDS)
+    fields = list(COMMON_FIELDS)
+    igpu_indices = dict(profile.igpu_fields)
+    for key, unit in IGPU_FIELD_UNITS.items():
+        index = igpu_indices.get(key)
+        if index is not None:
+            fields.append((key, index, unit))
     if profile.pm_version == 0x620205:
         fields += [
             # Idle/load PM-table evidence: d[105] tracks a live GFX/iGPU
-            # voltage-like value and d[106] tracks direct degrees Celsius.
-            # Keep both mappings version-gated until another table layout is
+            # voltage-like value. The common d[106] temperature field and the
+            # other common iGPU fields were added from profile.igpu_fields.
+            # Keep the voltage mapping version-gated until another layout is
             # independently verified.
-            ("igpu_voltage", 105, "V"),
-            ("igpu_temperature", 106, "C"),
             ("igpu_busy_pm_candidate", 110, "%"),
             ("igpu_idle_pm_candidate", 187, "%"),
             ("fit_metric", 16, "metric"),

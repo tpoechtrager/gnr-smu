@@ -157,8 +157,10 @@ FORMAT_PROFILES = {
         requires_topology_mask=True,
         igpu_fields=(
             ("igpu_power", 107), ("igpu_clock", 108),
-            ("igpu_activity", 109), ("igpu_current", 110),
             ("igpu_busy", 186), ("igpu_idle", 187),
+            # d[106] is the direct iGPU temperature candidate in the
+            # 0x620105 layout as well; the 9800X3D dump reads ~54.6 °C.
+            ("igpu_temperature", 106), ("igpu_voltage", 105),
         ),
     ),
     (0x620205, 2452): HardwareProfile(
@@ -228,7 +230,7 @@ FORMAT_PROFILES = {
         igpu_fields=(
             ("igpu_power", 107), ("igpu_clock", 108),
             ("igpu_busy", 110), ("igpu_idle", 187),
-            ("igpu_temperature", 106), ("gpu_voltage", 105),
+            ("igpu_temperature", 106), ("igpu_voltage", 105),
         ),
         global_fit=16,
     ),

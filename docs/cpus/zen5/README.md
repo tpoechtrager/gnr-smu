@@ -65,15 +65,17 @@ SMN paths for iGPU telemetry:
 |---|---|---|
 | iGPU Power | `d[107]` | W |
 | iGPU Clock | `d[108]` | MHz |
-| iGPU/GFX Voltage (PM candidate, 0x620205 only) | `d[105]` | V |
-| iGPU Temperature (PM candidate, 0x620205 only) | `d[106]` | °C |
-| iGPU Utilization (PM candidate, 0x620205 only) | `d[110]` | % |
-| iGPU Idle (0x620205 only) | `d[187]` | % |
+| iGPU Voltage (PM candidate) | `d[105]` | V |
+| iGPU Temperature (PM candidate) | `d[106]` | °C |
+| iGPU Utilization (PM candidate) | `d[186]` / `d[110]` | % |
+| iGPU Idle | `d[187]` | % |
 
-`d[186]` remains unidentified. `d[109]` is deliberately not shown because it
-can exceed 100% and its unit is unresolved. The d[105]/d[106] mappings are
-currently approved only for the `0x620205` PM table; no separate iGPU SMN
-address is known.
+The utilization source is `d[186]` on the 9800X3D and `d[110]` on the 9950X3D;
+both are presented with the same label. `d[109]` is deliberately not shown
+because it can exceed 100% and its unit is unresolved. The d[105] voltage and
+d[106] temperature candidates are enabled for both supported formats; the
+9800X3D dump contains `d[106] = 54.6025 °C`. No separate iGPU SMN address is
+known.
 The DPM/voltage mirrors (`d[113..131]`)
 remain research fields; `d[128]/d[129]` are static values, not live voltage.
 

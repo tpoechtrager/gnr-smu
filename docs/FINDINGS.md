@@ -42,17 +42,19 @@ For a complete variable-to-byte mapping, reference **[PM_TABLE_MAP.md](../PM_TAB
 
 The dashboard and named exporter use only PM-table positions and profile-approved
 SMN paths. `d[107]` is the iGPU-power candidate, `d[108]` is the iGPU-clock
-candidate, and `d[110]` is the experimental iGPU-utilization candidate. For PM table
-`0x620205`, idle/load behavior additionally supports `d[105]` as an iGPU/GFX
-voltage candidate and `d[106]` as a direct iGPU temperature candidate. No
-separate SMN address has been established for either field. `d[83]` remains a
-VDDCR_SOC/NB setpoint candidate.
+candidate, and `d[110]` is the experimental iGPU-utilization candidate on the
+9950X3D. `d[186]` supplies the corresponding 9800X3D utilization row. `d[106]`
+is now enabled as the direct iGPU temperature candidate for both Granite Ridge
+formats; the 9800X3D dump contains `54.6025 °C`. For PM table `0x620205`,
+idle/load behavior additionally supports `d[105]` as an iGPU/GFX voltage
+candidate; the same offset is exposed as a parked-iGPU voltage candidate on
+the 9800X3D. No separate SMN address has been established for either field.
+`d[83]` remains a VDDCR_SOC/NB setpoint candidate.
 
 `d[187]` is the iGPU Idle metric; `d[186]` remains unidentified. `d[109]`
 remains unnamed because it can exceed 100% and its unit is unresolved.
 `d[128]/d[129]` are static DPM values, not live GPU voltage. The d[105]/d[106]
-candidates are currently limited to the `0x620205` PM layout and remain
-medium-confidence mappings.
+candidates remain medium-confidence mappings.
 
 **⚠ Corrected 2026-07-30 — there is no "temperature encoding".** Offsets `0x00C`, `0x024`,
 `0x100`, `0x2E8`, `0x348` were previously written up as non-linearly encoded temperatures.

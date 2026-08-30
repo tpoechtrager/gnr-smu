@@ -891,12 +891,10 @@ class GNRMaster(QMainWindow):
         for key, label, unit, tooltip in (
             ("igpu_power", "iGPU Power", "W", "iGPU power PM-table field."),
             ("igpu_clock", "iGPU Clock", "MHz", "iGPU clock PM-table field."),
-            ("igpu_activity", "iGPU Activity", "%", "iGPU activity PM-table field."),
-            ("igpu_current", "iGPU Current", "A", "iGPU current PM-table field."),
             ("igpu_busy", "iGPU Utilization", "%", "iGPU busy/utilization PM-table field."),
             ("igpu_idle", "iGPU Idle", "%", "iGPU idle PM-table field."),
             ("igpu_temperature", "iGPU Temperature", "°C", "iGPU temperature PM-table field."),
-            ("gpu_voltage", "iGPU/GFX Voltage", "V", "iGPU/GFX voltage PM-table field."),
+            ("igpu_voltage", "iGPU Voltage", "V", "iGPU voltage PM-table field."),
         ):
             if not self.profile or not any(field_key == key for field_key, _index in self.profile.igpu_fields):
                 continue

@@ -150,8 +150,8 @@ followed by its live value in the *same* unit. See
 | 0x180 | 96 | ~2.5 | N | SoC Power (W) | HIGH |
 | 0x184 | 97 | ~0.9 | N | SoC Telemetry Voltage (V) | MED |
 | 0x188-0x1A0 | 98-104 | 0 | Y | Reserved | — |
-| 0x1A4 | 105 | ~0.73 | Y | Minor Rail Voltage (V) | LOW |
-| 0x1A8 | 106 | ~47.7 | N | iGPU Accumulated Metric | MED |
+| 0x1A4 | 105 | ~0.73 | N | **iGPU Voltage (V)** — zero when the iGPU is parked | MED |
+| 0x1A8 | 106 | ~47.7 | N | **iGPU Temperature (°C)** | MED |
 
 ## Zone 0x1AC — iGPU Telemetry
 
