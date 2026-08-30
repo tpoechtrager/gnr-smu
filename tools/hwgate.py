@@ -30,6 +30,7 @@ class HardwareProfile:
     core_frequency: Optional[int]
     core_fit: Optional[int]
     core_activity: Optional[int]
+    core_light_cstate: Optional[int]
     core_c0: Optional[int]
     core_cc1: Optional[int]
     core_cc6: int
@@ -88,6 +89,12 @@ class HardwareProfile:
     # Unlisted models require this read to identify populated PM lanes. Exact
     # write-approved models retain their established dense fallback.
     requires_topology_mask: bool = False
+    # Profile-specific iGPU lanes. The key is a GUI/export identity and the
+    # value is its PM-table float index; absent keys are not displayed.
+    igpu_fields: tuple = ()
+    # Some formats expose only a package-level FIT-related metric, rather than
+    # the per-core lane used by the 8-slot format.
+    global_fit: Optional[int] = None
 
     @property
     def float_count(self):
@@ -124,8 +131,9 @@ FORMAT_PROFILES = {
     (0x620105, 1828): HardwareProfile(
         "Granite Ridge 8-slot PM format (read-only)", "", 0x620105, 1828, 0,
         core_power=333, core_voltage=309, core_temp=317, core_frequency=325,
-        core_fit=341, core_activity=357, core_c0=None, core_cc1=None,
-        core_cc6=349, core_boost_limit=373, boost_limit_confident=True,
+        core_fit=None, core_activity=None, core_light_cstate=None,
+        core_c0=341, core_cc1=349,
+        core_cc6=357, core_boost_limit=373, boost_limit_confident=True,
         ccd_power_candidate=None, ccd_vddm_candidate=None,
         # Per-CCD L3 cache temperature for the 0x620105 layout.  This is the
         # profile-specific d[448 + CCD] lane; the 9800X3D has one CCD.
@@ -141,10 +149,17 @@ FORMAT_PROFILES = {
         iod_smn_temp_addresses=(0x59828, 0x5982C, 0x59834, 0x59838),
         iod_smn_temp_valid_bit=11, iod_smn_temp_field_shift=12,
         iod_smn_lane_numbers=(1, 2, 4, 5),
+        # Live EDC-current candidate immediately following EDC_LIMIT d[63].
+        edc_value=64,
         prochot_smn_address=0x59804,
         prochot_ext_mask=0x04, prochot_cpu_mask=0x08, htc_mask=0x10,
         slot_count=8,
         requires_topology_mask=True,
+        igpu_fields=(
+            ("igpu_power", 107), ("igpu_clock", 108),
+            ("igpu_activity", 109), ("igpu_current", 110),
+            ("igpu_busy", 186), ("igpu_idle", 187),
+        ),
     ),
     (0x620205, 2452): HardwareProfile(
         "Granite Ridge 16-slot PM format (read-only)", "", 0x620205, 2452, 0,
@@ -153,7 +168,8 @@ FORMAT_PROFILES = {
         # per-core clock array. Live comparison on this 9950X3D found
         # d[349] = 5.472 GHz while Linux reported 5456 MHz for core 0.
         # Do not retain the previous FIT label for this frequency lane.
-        core_fit=None, core_activity=365, core_c0=381, core_cc1=397,
+        core_fit=None, core_activity=365, core_light_cstate=None,
+        core_c0=381, core_cc1=397,
         core_cc6=413, core_boost_limit=445, boost_limit_confident=False,
         # The neighbouring CCD fields remain explicitly separate from the
         # validated L3 pair until their identities are established.
@@ -209,6 +225,12 @@ FORMAT_PROFILES = {
         prochot_ext_mask=0x04, prochot_cpu_mask=0x08, htc_mask=0x10,
         slot_count=16,
         requires_topology_mask=True,
+        igpu_fields=(
+            ("igpu_power", 107), ("igpu_clock", 108),
+            ("igpu_busy", 110), ("igpu_idle", 187),
+            ("igpu_temperature", 106), ("gpu_voltage", 105),
+        ),
+        global_fit=16,
     ),
 }
 

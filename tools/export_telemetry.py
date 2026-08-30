@@ -138,12 +138,11 @@ def named_fields(profile, slots=None):
         if profile.core_fit is not None:
             fields.append((f"c{core}_fit", profile.core_fit + core, "metric"))
         if profile.core_activity is not None:
-            activity_name = (f"c{core}_activity_metric"
-                             if profile.core_c0 is not None
-                             else f"c{core}_light_cstate_metric")
-            fields.append(
-                (activity_name, profile.core_activity + core, "metric")
-            )
+            fields.append((f"c{core}_activity_metric",
+                           profile.core_activity + core, "metric"))
+        if profile.core_light_cstate is not None:
+            fields.append((f"c{core}_light_cstate_metric",
+                           profile.core_light_cstate + core, "metric"))
         if profile.core_c0 is not None:
             fields.append((f"c{core}_c0_residency", profile.core_c0 + core, "%"))
         if profile.core_cc1 is not None:

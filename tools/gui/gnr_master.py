@@ -858,9 +858,12 @@ class GNRMaster(QMainWindow):
         power_limits = self._add_sensor_group(limits_root, "Package Power & Current")
         self._add_sensor(power_limits, "ppt", "CPU PPT", "W")
         self._add_sensor(power_limits, "tdc", "CPU TDC", "A")
-        if self.profile and self.profile.edc_value is not None:
-            self._add_sensor(power_limits, "edc", "CPU EDC", "A",
-                             f"Live PM-table candidate d[{self.profile.edc_value}], not yet SMU-confirmed")
+        edc_tooltip = (
+            f"Live PM-table candidate d[{self.profile.edc_value}], not yet SMU-confirmed"
+            if self.profile and self.profile.edc_value is not None else
+            "No live EDC value is mapped for this PM-table format."
+        )
+        self._add_sensor(power_limits, "edc", "CPU EDC", "A", edc_tooltip)
 
         self._add_sensor(power_limits, "ppt_limit", "CPU PPT Limit", "W")
         self._add_sensor(power_limits, "tdc_limit", "CPU TDC Limit", "A")
@@ -885,34 +888,19 @@ class GNRMaster(QMainWindow):
         ):
             self._add_sensor(power, key, label, "W")
         igpu = self._add_sensor_group(None, "iGPU")
-        igpu_tooltips = {
-            "igpu_power": "iGPU power candidate from PM-table d[107].",
-            "igpu_clock": "iGPU clock candidate from PM-table d[108].",
-            "igpu_busy": ("Experimental iGPU utilization candidate from PM-table d[110]. "
-                          "d[186]/d[187] are tracked separately as Busy/Idle candidates."),
-            "igpu_idle": ("Experimental iGPU idle candidate from PM-table d[187]. "
-                          "It complements d[186] to approximately 100 percent."),
-            "igpu_temperature": ("iGPU temperature candidate from PM-table d[106]. "
-                                  "The mapping is validated by idle/load behavior for "
-                                  "the 0x620205 table; no SMN address is assumed."),
-            "gpu_voltage": ("iGPU/GFX voltage candidate from PM-table d[105]. "
-                            "The mapping is validated by idle/load behavior for "
-                            "the 0x620205 table; no SMN address is assumed."),
-        }
-        for key, label, unit in (
-            ("igpu_power", "iGPU Power", "W"),
-            ("igpu_clock", "iGPU Clock", "MHz"),
-            ("igpu_busy", "iGPU Utilization", "%"),
-            ("igpu_idle", "iGPU Idle", "%"),
-            ("igpu_temperature", "iGPU Temperature", "°C"),
-            ("gpu_voltage", "iGPU/GFX Voltage", "V"),
+        for key, label, unit, tooltip in (
+            ("igpu_power", "iGPU Power", "W", "iGPU power PM-table field."),
+            ("igpu_clock", "iGPU Clock", "MHz", "iGPU clock PM-table field."),
+            ("igpu_activity", "iGPU Activity", "%", "iGPU activity PM-table field."),
+            ("igpu_current", "iGPU Current", "A", "iGPU current PM-table field."),
+            ("igpu_busy", "iGPU Utilization", "%", "iGPU busy/utilization PM-table field."),
+            ("igpu_idle", "iGPU Idle", "%", "iGPU idle PM-table field."),
+            ("igpu_temperature", "iGPU Temperature", "°C", "iGPU temperature PM-table field."),
+            ("gpu_voltage", "iGPU/GFX Voltage", "V", "iGPU/GFX voltage PM-table field."),
         ):
-            self._add_sensor(igpu, key, label, unit, igpu_tooltips[key])
-        current_igpu_map = (self.profile is not None
-                            and self.profile.pm_version == 0x620205
-                            and self.profile.table_size == 2452)
-        for key in ("igpu_busy", "igpu_idle", "igpu_temperature", "gpu_voltage"):
-            self.sensor_items[key].setHidden(not current_igpu_map)
+            if not self.profile or not any(field_key == key for field_key, _index in self.profile.igpu_fields):
+                continue
+            self._add_sensor(igpu, key, label, unit, tooltip)
         core_power = self._add_sensor_group(power, "Core Powers")
         for core in self.visible_core_slots:
             self._add_sensor(core_power, f"core_power_{core}", self._core_label(core), "W")
@@ -943,13 +931,14 @@ class GNRMaster(QMainWindow):
         residency = self._add_sensor_group(None, residency_label)
         ccd_summary = self._add_sensor_group(residency, "CCD residency summary")
         has_direct_c0 = self.profile is not None and self.profile.core_c0 is not None
+        has_direct_cc1 = self.profile is not None and self.profile.core_cc1 is not None
         for ccd in self.visible_ccds:
             label = (self._ccd_label(ccd, suffix=" C0 residency") if has_direct_c0
                      else self._ccd_label(ccd, suffix=" active/load estimate"))
             self._add_sensor(ccd_summary, f"ccd_c0_{ccd}", label, "%",
-                             "C0 is direct on the 9950X3D; 9800X3D uses 100 - CC6.",
+                             "C0 is direct where this PM-table profile exposes it; otherwise 100 - CC6.",
                              ACCENT_GREEN)
-            if has_direct_c0:
+            if has_direct_cc1:
                 self._add_sensor(ccd_summary, f"ccd_cc1_{ccd}",
                                  self._ccd_label(ccd, suffix=" CC1 residency"), "%",
                                  current_color=ACCENT_CYAN)
@@ -957,12 +946,17 @@ class GNRMaster(QMainWindow):
                              self._ccd_label(ccd, suffix=" CC6 residency"), "%",
                              current_color=ACCENT_PURPLE)
 
-        if self.profile is None or self.profile.core_fit is not None:
+        if (self.profile is None or self.profile.core_fit is not None
+                or self.profile.global_fit is not None):
             fit_group = self._add_sensor_group(residency, "FIT / related metric")
+            if self.profile and self.profile.global_fit is not None:
+                self._add_sensor(fit_group, "fit_metric", "CPU FIT / related metric", "",
+                                 "Package-level PM-table FIT/related metric.", ACCENT_ORANGE)
             for core in self.visible_core_slots:
-                self._add_sensor(fit_group, f"core_fit_{core}", self._core_label(core), "",
-                                 "Per-core PM-table FIT/related metric; not a direct temperature or voltage reading.",
-                                 ACCENT_ORANGE)
+                if self.profile is None or self.profile.core_fit is not None:
+                    self._add_sensor(fit_group, f"core_fit_{core}", self._core_label(core), "",
+                                     "Per-core PM-table FIT/related metric; not a direct temperature or voltage reading.",
+                                     ACCENT_ORANGE)
 
         c0_group = self._add_sensor_group(
             residency, "C0 residency · active cores" if has_direct_c0 else "Active/load estimate · 100 - CC6"
@@ -972,7 +966,7 @@ class GNRMaster(QMainWindow):
                              current_color=ACCENT_GREEN)
 
         cc1_group = None
-        if has_direct_c0:
+        if has_direct_cc1:
             cc1_group = self._add_sensor_group(residency, "CC1 residency · light idle")
             for core in self.visible_core_slots:
                 self._add_sensor(cc1_group, f"core_cc1_{core}", self._core_label(core), "%",
@@ -1545,14 +1539,8 @@ class GNRMaster(QMainWindow):
         self._set_sensor("soc_power", d[21])
         self._set_sensor("vddio_power", d[22])
         self._set_sensor("vdd18_power", d[23])
-        self._set_sensor("igpu_power", d[107])
-        self._set_sensor("igpu_clock", d[108])
-        current_igpu_map = (self.profile.pm_version == 0x620205
-                            and self.profile.table_size == 2452)
-        self._set_sensor("igpu_busy", d[110] if current_igpu_map else None)
-        self._set_sensor("igpu_idle", d[187] if current_igpu_map else None)
-        self._set_sensor("igpu_temperature", d[106] if current_igpu_map else None)
-        self._set_sensor("gpu_voltage", d[105] if current_igpu_map else None)
+        for key, index in self.profile.igpu_fields:
+            self._set_sensor(key, d[index])
         self._set_sensor("fclk", d[71])
         self._set_sensor("uclk", d[75])
         self._set_sensor("mclk", d[79])
@@ -1565,6 +1553,8 @@ class GNRMaster(QMainWindow):
         self._set_sensor("vddp", d[269])
         self._set_sensor("vid", d[19])
         self._set_sensor("vid_limit", d[18])
+        if self.profile.global_fit is not None:
+            self._set_sensor("fit_metric", d[self.profile.global_fit])
 
         for ccd, ccd_temp in zip(self.visible_ccds, ccd_temperatures):
             self._set_sensor(f"tccd{ccd}", ccd_temp)
@@ -1581,9 +1571,10 @@ class GNRMaster(QMainWindow):
             cc6_values = [d[self.profile.core_cc6 + slot] for slot in ccd_slots]
             if self.profile.core_c0 is not None:
                 c0_values = [d[self.profile.core_c0 + slot] for slot in ccd_slots]
-                cc1_values = [d[self.profile.core_cc1 + slot] for slot in ccd_slots]
                 self._set_sensor(f"ccd_c0_{ccd}", sum(c0_values) / len(c0_values))
-                self._set_sensor(f"ccd_cc1_{ccd}", sum(cc1_values) / len(cc1_values))
+                if self.profile.core_cc1 is not None:
+                    cc1_values = [d[self.profile.core_cc1 + slot] for slot in ccd_slots]
+                    self._set_sensor(f"ccd_cc1_{ccd}", sum(cc1_values) / len(cc1_values))
             else:
                 self._set_sensor(f"ccd_c0_{ccd}", 100 - sum(cc6_values) / len(cc6_values))
             self._set_sensor(f"ccd_cc6_{ccd}", sum(cc6_values) / len(cc6_values))
@@ -1605,9 +1596,10 @@ class GNRMaster(QMainWindow):
             self._set_sensor(f"core_cc6_{core}", d[self.profile.core_cc6 + core])
             if self.profile.core_c0 is not None:
                 self._set_sensor(f"core_c0_{core}", d[self.profile.core_c0 + core])
-                self._set_sensor(f"core_cc1_{core}", d[self.profile.core_cc1 + core])
             else:
                 self._set_sensor(f"core_c0_{core}", 100 - d[self.profile.core_cc6 + core])
+            if self.profile.core_cc1 is not None:
+                self._set_sensor(f"core_cc1_{core}", d[self.profile.core_cc1 + core])
         if frequencies:
             self._set_summary("frequency", f"{max(frequencies):.0f} MHz")
         else:

@@ -48,11 +48,11 @@ voltage candidate and `d[106]` as a direct iGPU temperature candidate. No
 separate SMN address has been established for either field. `d[83]` remains a
 VDDCR_SOC/NB setpoint candidate.
 
-`d[186]`/`d[187]` are not Busy/Idle: controlled iGPU load leaves them
-approximately `0/100`. `d[109]` remains unnamed because it can exceed 100% and
-its unit is unresolved. `d[128]/d[129]` are static DPM values, not live GPU
-voltage. The d[105]/d[106] candidates are currently limited to the `0x620205`
-PM layout and remain medium-confidence mappings.
+`d[187]` is the iGPU Idle metric; `d[186]` remains unidentified. `d[109]`
+remains unnamed because it can exceed 100% and its unit is unresolved.
+`d[128]/d[129]` are static DPM values, not live GPU voltage. The d[105]/d[106]
+candidates are currently limited to the `0x620205` PM layout and remain
+medium-confidence mappings.
 
 **⚠ Corrected 2026-07-30 — there is no "temperature encoding".** Offsets `0x00C`, `0x024`,
 `0x100`, `0x2E8`, `0x348` were previously written up as non-linearly encoded temperatures.

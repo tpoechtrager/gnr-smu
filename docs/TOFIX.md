@@ -2,7 +2,12 @@
 
 ## Resolved Issues
 
-- [x] **EDC_VALUE — closed as a negative result (2026-07-30)** — there is no live EDC value in PM table v0x620105. Searched all 457 floats at three load points with `research/hunt_edc.py`. The earlier attempt used an integer load; the fix was not "use AVX-512" (`--vecfp` pulls *less* package power than `--cpu`) but `--matrix`, which reaches 103 A of the 120 A TDC and pins Tctl at the configured thermal limit on the tested 9800X3D. At that point nothing in the table sits in a plausible EDC range. Deriving it from `sum(d[301-308])` per-core IDD is also out: the ratio to TDC drifts 0.98-1.20. See [PM_TABLE_MAP.md](../PM_TABLE_MAP.md#edc_value--closed-negative-result-2026-07-30).
+- [ ] **9800X3D EDC_VALUE confirmation** — `d[64]` is the leading live EDC
+  candidate: it directly follows EDC Limit `d[63]`, reads 31 A in the stored
+  PBO-configured dump, and historical load samples moved it 44→104 A. The old
+  negative result incorrectly required this fast-current reading to exceed TDC.
+  Confirm with a controlled EDC-limit change and read-back. See
+  [PM_TABLE_MAP.md](../PM_TABLE_MAP.md#edc_value--d64-candidate-revised-2026-08-30).
 
 - [x] **Honesty audit of PM_TABLE_MAP.md (2026-07-30)** — every mechanically checkable claim in the map is now asserted against live hardware by `research/audit_map.py`, which parses the document itself. First run: 51 failures; after fixing the test's own methodology (median instead of mean, paired sampling windows for sensor comparisons) 11 genuine documentation errors remained, all corrected. The worst: three "perfect mirrors with delta < 0.002" that differ on every single read (up to 11.7 W), nine fields labeled "Energy Accumulator (J) / CONFIRMED" that plateau under steady load instead of accumulating, six `Static: Y` flags on fields that move with load, core/thread counts that do not match this SKU, and a "Total floats mapped: 457" claim when 90 indices have no row at all. Full before/after table in [PM_TABLE_MAP.md](../PM_TABLE_MAP.md#honesty-audit-2026-07-30). The audit now exits 0 and is the regression gate for the map.
 

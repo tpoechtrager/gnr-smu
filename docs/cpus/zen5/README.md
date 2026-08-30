@@ -68,11 +68,12 @@ SMN paths for iGPU telemetry:
 | iGPU/GFX Voltage (PM candidate, 0x620205 only) | `d[105]` | V |
 | iGPU Temperature (PM candidate, 0x620205 only) | `d[106]` | °C |
 | iGPU Utilization (PM candidate, 0x620205 only) | `d[110]` | % |
+| iGPU Idle (0x620205 only) | `d[187]` | % |
 
-`d[186]`/`d[187]` are not Busy/Idle: controlled iGPU load leaves them
-approximately `0/100`. `d[109]` is deliberately not shown because it can
-exceed 100% and its unit is unresolved. The d[105]/d[106] mappings are currently
-approved only for the `0x620205` PM table; no separate iGPU SMN address is known.
+`d[186]` remains unidentified. `d[109]` is deliberately not shown because it
+can exceed 100% and its unit is unresolved. The d[105]/d[106] mappings are
+currently approved only for the `0x620205` PM table; no separate iGPU SMN
+address is known.
 The DPM/voltage mirrors (`d[113..131]`)
 remain research fields; `d[128]/d[129]` are static values, not live voltage.
 
