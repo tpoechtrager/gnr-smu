@@ -451,7 +451,7 @@ clearly above that at idle.
 | 0x6F4 | 445 | ~3.1 | N | Package Energy Rate (W) | MED |
 | 0x6F8 | 446 | 0.23 idle → 0.33 load | N | Scalar (load-dependent) | LOW |
 | 0x6FC | 447 | 0.950 | Y | SVI3 Reference Voltage (V) | MED |
-| 0x700 | 448 | ~36.9 → ~55.3 | N | **L3 Cache temperature (CCD1, °C).** The 0x620105 profile uses this direct per-CCD L3 lane. Its slower/lower response than the core average is expected for a distinct cache temperature domain. | CONFIRMED |
+| 0x700 | 448 | ~36.9 → ~55.3 | N | **L3 Cache temperature (CCD0, °C).** The 0x620105 profile uses this direct per-CCD L3 lane. Its slower/lower response than the core average is expected for a distinct cache temperature domain. | CONFIRMED |
 | 0x704 | 449 | ~35.5 → ~53.4 | N | Same filtered signal as d[448], offset ~−1.9 °C. **Not** min core temp (real min 74.9 °C vs 53.4 °C) | LOW (was "Min Core Temp / HIGH") |
 | 0x708 | 450 | ~5.43 | N | Peak Core Frequency (GHz) | HIGH |
 | 0x70C | 451 | ~5.44 | N | Average Core Frequency (GHz) | HIGH |
@@ -556,7 +556,7 @@ Validated by comparing PM table values against `k10temp`, `amdgpu`, `spd5118`, `
 | d[64] 0x100 | 44→97 (and 90→104 in another run) | k10temp Tctl | 49→84°C | **NO — not a temperature at all** |
 | d[210] 0x348 | 15→100.00 (pinned) | k10temp Tccd1 | 38→83°C | **NO — a percentage** |
 | d[186] 0x2E8 | 0.003→0.015 | amdgpu edge | iGPU idle | **NO — iGPU activity %** |
-| d[448] 0x700 | 36.9→55.3 | core temp average d[317-324] | 36.4→78.3°C | **Distinct L3 Cache temperature (CCD1), not a core-temperature average** |
+| d[448] 0x700 | 36.9→55.3 | core temp average d[317-324] | 36.4→78.3°C | **Distinct L3 Cache temperature (CCD0), not a core-temperature average** |
 
 ### Reading the PM table perturbs the measurement (2026-07-30)
 
@@ -610,7 +610,7 @@ What actually went wrong, and the corrected labels:
 | 0x438 d[270] | TDC Current Value (A) | **Hotspot Temperature (°C)** |
 | 0x458 d[278] | PPT Current Value (W) | unidentified, near-static |
 | 0x4A8/0x4AC d[298/299] | L3/V-Cache Temp | slow thermal, domain unconfirmed |
-| 0x700/0x704 d[448/449] | Average / Min Core Temp | d[448] is L3 Cache temperature (CCD1); d[449] remains a related, unidentified thermal lane |
+| 0x700/0x704 d[448/449] | Average / Min Core Temp | d[448] is L3 Cache temperature (CCD0); d[449] remains a related, unidentified thermal lane |
 | 0x710 d[452] | Total Package Energy (J) | countdown/credit — decreases under load |
 
 The `(LIMIT, VALUE)` pairing is what makes zone 0x000 unambiguous: 0x00C peaks at 128 W
@@ -629,7 +629,7 @@ part of the PM-table float map used by this document:
 | Signal | SMN address | Decode |
 |---|---:|---|
 | Tctl/Tdie | `0x59800` | `(raw >> 21) × 0.125 °C`, with the register's `-49 °C` range flag |
-| CCD1 temperature | `0x59B08` | validity bit 11; bits 0..10 × 0.125 - 49 °C |
+| CCD0 temperature | `0x59B08` | validity bit 11; bits 0..10 × 0.125 - 49 °C |
 | PROCHOT EXT | `0x59804` | bit 2 (`0x04`) |
 | PROCHOT CPU | `0x59804` | bit 3 (`0x08`) |
 | HTC | `0x59804` | bit 4 (`0x10`) |

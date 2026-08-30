@@ -1060,12 +1060,12 @@ class GNRMaster(QMainWindow):
             self.visible_ccds = self.factory_enabled_ccds
 
     def _core_label(self, slot):
-        label = f"Core {slot} (CCD{slot // 8 + 1}"
+        label = f"Core {slot} (CCD{slot // 8}"
         return label + (")" if slot in self._factory_enabled_slot_set
                         else ", factory-disabled)")
 
     def _ccd_label(self, ccd, prefix="", suffix=""):
-        label = f"{prefix}CCD{ccd + 1}{suffix}"
+        label = f"{prefix}CCD{ccd}{suffix}"
         return (label if ccd in self.factory_enabled_ccds
                 else f"{label} (factory-disabled)")
 
@@ -1373,7 +1373,7 @@ class GNRMaster(QMainWindow):
             ("Thermal limit", d[10]),
         ]
         temperatures.extend(
-            (f"CPU CCD{ccd + 1}", temperature)
+            (f"CPU CCD{ccd}", temperature)
             for ccd, temperature in zip(self.visible_ccds, ccd_temperatures)
         )
         temperatures.extend(
@@ -1382,7 +1382,7 @@ class GNRMaster(QMainWindow):
         )
         if self.profile.ccd_count:
             temperatures.extend(
-                (f"CCD L3 temperature {ccd + 1}",
+                (f"CCD L3 temperature {ccd}",
                  d[self.profile.ccd_l3_temperature + ccd])
                 for ccd in self.visible_ccds
             )

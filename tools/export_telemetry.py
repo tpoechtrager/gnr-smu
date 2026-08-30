@@ -116,7 +116,7 @@ def named_fields(profile, slots=None):
     if profile.ccd_l3_temperature is not None:
         for ccd in range(profile.ccd_count):
             fields.append(
-                (f"ccd{ccd + 1}_l3_cache", profile.ccd_l3_temperature + ccd, "C")
+                (f"ccd{ccd}_l3_cache", profile.ccd_l3_temperature + ccd, "C")
             )
     if profile.prochot_smn_address is not None:
         fields += [

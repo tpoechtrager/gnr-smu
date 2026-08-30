@@ -75,7 +75,7 @@ def main():
     if factory_enabled_ccds is None:
         print("  factory-enabled CCDs: unavailable")
     else:
-        print(f"  factory-enabled CCDs: {', '.join(str(ccd + 1) for ccd in factory_enabled_ccds) or 'none'}")
+        print(f"  factory-enabled CCDs: {', '.join(str(ccd) for ccd in factory_enabled_ccds) or 'none'}")
     print("  note: factory maps do not identify BIOS-disabled CCDs or cores")
     print("\nDirect CCD temperature registers:")
     for ccd, address in enumerate(profile.ccd_smn_temp_addresses):
@@ -83,7 +83,7 @@ def main():
         valid, temperature = decode_direct_ccd_temperature(raw)
         raw_text = "unavailable" if raw is None else f"0x{raw:08X}"
         value_text = f"{temperature:.3f} °C" if valid else "-- (valid bit clear)"
-        print(f"  CCD{ccd + 1}: SMN 0x{address:05X} raw={raw_text}; {value_text}")
+        print(f"  CCD{ccd}: SMN 0x{address:05X} raw={raw_text}; {value_text}")
 
     print("\nFactory topology masks (low byte: factory-disabled bits; inverted: usable bits):")
     for ccd_base in range(0, profile.slot_count, 8):
@@ -110,7 +110,7 @@ def main():
               f"{table[profile.core_temp + slot]:.6f}")
     if profile.ccd_l3_temperature is not None:
         for ccd in range(profile.ccd_count):
-            print(f"  CCD{ccd + 1} L3: d[{profile.ccd_l3_temperature + ccd}] = "
+            print(f"  CCD{ccd} L3: d[{profile.ccd_l3_temperature + ccd}] = "
                   f"{table[profile.ccd_l3_temperature + ccd]:.6f}")
 
 
